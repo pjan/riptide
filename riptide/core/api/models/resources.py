@@ -46,6 +46,8 @@ class Track(BaseModel):
     popularity: int
     copyright: Optional[str] = None
     bpm: Optional[int] = None
+    key: Optional[str] = None
+    keyScale: Optional[str] = None
     url: str
     isrc: str
     editable: bool

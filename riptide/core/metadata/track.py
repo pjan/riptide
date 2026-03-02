@@ -23,6 +23,8 @@ class Metadata:
     date: str
     isrc: str
     bpm: str | None = None
+    key: str | None = None
+    key_scale: str | None = None
     lyrics: str | None = None
     credits: list[AlbumItemsCredits.ItemWithCredits.CreditsEntry] = field(
         default_factory=list
@@ -64,6 +66,10 @@ def add_flac_metadata(track_path: Path, metadata: Metadata) -> None:
 
     if metadata.bpm:
         mutagen["BPM"] = metadata.bpm
+    if metadata.key:
+        mutagen["INITIALKEY"] = metadata.key
+    if metadata.key_scale:
+        mutagen["KEY"] = metadata.key_scale
     if metadata.lyrics:
         mutagen["LYRICS"] = metadata.lyrics
 
@@ -104,6 +110,10 @@ def add_m4a_metadata(track_path: Path, metadata: Metadata) -> None:
 
     if metadata.bpm:
         mutagen["bpm"] = metadata.bpm
+    if metadata.key:
+        mutagen["----:com.apple.iTunes:initialkey"] = metadata.key
+    if metadata.key_scale:
+        mutagen["----:com.apple.iTunes:key"] = metadata.key_scale
 
     mutagen.save()
 
@@ -157,6 +167,8 @@ def add_track_metadata(
         date=date,
         isrc=track.isrc,
         bpm=str(track.bpm or ""),
+        key=track.key,
+        key_scale=track.keyScale,
         lyrics=lyrics or None,
         cover_data=cover_data,
         credits=credits_contributors,
