@@ -1,0 +1,36 @@
+[build-system]
+requires = ["setuptools", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["riptide*"]
+exclude = ["nix*", "tests*", "docs*", "examples*"]
+
+[project]
+name = "riptide"
+version = "0.0.1"
+description = "CLI for downloading tidal tracks."
+readme = "README.md"
+requires-python = ">=3.13"
+authors = [{ name = "pjan" }]
+classifiers = [
+  "Environment :: Console",
+  "Programming Language :: Python :: 3",
+  "Operating System :: OS Independent",
+]
+
+[project.urls]
+homepage = "https://github.com/pjan/riptide"
+
+[project.scripts]
+riptide = "riptide.cli.app:app"
+
+[tool.coverage.run]
+omit = ["*/models/*", "*/models.py"]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.4.2",
+    "pytest-mock>=3.15.1",
+]

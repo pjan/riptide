@@ -1,0 +1,52 @@
+{
+  description = "riptide - CLI for downloading tidal tracks";
+
+  inputs = {
+    nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
+    flake-utils.url = "github:numtide/flake-utils";
+  };
+
+  outputs = { self, nixpkgs, flake-utils }:
+    flake-utils.lib.eachDefaultSystem (system:
+      let
+        pkgs = nixpkgs.legacyPackages.${system};
+      in
+      {
+        packages = {
+          default = pkgs.callPackage ./nix/package.nix { };
+          riptide = self.packages.${system}.default;
+        };
+
+        apps = {
+          default = {
+            type = "app";
+            program = "${self.packages.${system}.default}/bin/riptide";
+          };
+        };
+
+        devShells.default = pkgs.mkShell {
+          buildInputs = with pkgs; [
+            python313
+            ffmpeg
+          ] ++ (with pkgs.python313Packages; [
+            aiofiles
+            aiohttp
+            m3u8
+            mutagen
+            pydantic
+            requests
+            requests-cache
+            typer
+            pytest
+            pytest-mock
+          ]);
+
+          shellHook = ''
+            echo "riptide development environment"
+            echo " > Python: $(python --version)"
+            echo " > FFmpeg: $(ffmpeg -version | head -n1)"
+          '';
+        };
+      }
+    );
+}
