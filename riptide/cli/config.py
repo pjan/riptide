@@ -104,6 +104,11 @@ class Config(BaseModel):
 
     templates: TemplatesConfig = TemplatesConfig()
 
+    class ListConfig(BaseModel):
+        format: str = "{item.id} | {item.artist} | {album.title} | {item.number:02d} | {item.title}"
+
+    list: ListConfig = ListConfig()
+
 
 def load_config_file(config_file: Path) -> Config:
     log.debug(f"loading '{config_file}'")

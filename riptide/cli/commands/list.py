@@ -11,6 +11,7 @@ from riptide.cli.config import (
 from riptide.cli.ctx import Context
 from riptide.cli.utils.resource import TidalResource
 from riptide.core.api.models import Album, Track, Video
+from riptide.core.utils.format import generate_template_data
 
 list_command = typer.Typer(name="list")
 register_subcommands(list_command)
@@ -19,6 +20,14 @@ register_subcommands(list_command)
 @list_command.callback(no_args_is_help=True)
 def list_callback(
     ctx: Context,
+    FORMAT: Annotated[
+        str,
+        typer.Option(
+            "--output",
+            "-o",
+            help="Format output list template.",
+        ),
+    ] = "",
     SINGLES_FILTER: Annotated[
         ARTIST_SINGLES_FILTER_LITERAL,
         typer.Option(
@@ -42,86 +51,42 @@ def list_callback(
 
     ctx.invoke(refresh, EARLY_EXPIRE_TIME=600)
 
+    # Use provided format, or fall back to config, or fall back to default
+    format_template = FORMAT or CONFIG.list.format
+
     def list_resources():
         def format_track_line(track: Track, album: Album | None = None) -> str:
-            """Format track information as a single line."""
-            # Basic info
-            parts = [
-                f"ID: {track.id}",
-                f"Title: {track.full_name}",
-            ]
+            """Format track information using the template."""
+            try:
+                # Generate template data
+                template_data = generate_template_data(
+                    item=track,
+                    album=album,
+                    quality=track.audioQuality,
+                )
 
-            # Artist(s)
-            if track.artist:
-                parts.append(f"Artist: {track.artist.name}")
-            elif track.artists:
-                artist_names = ", ".join(a.name for a in track.artists)
-                parts.append(f"Artists: {artist_names}")
-
-            # Album
-            album_obj = album or track.album
-            if album_obj:
-                parts.append(f"Album: {album_obj.title}")
-
-            # Track/Disc number
-            if track.volumeNumber > 1:
-                parts.append(f"Track: {track.volumeNumber}-{track.trackNumber}")
-            else:
-                parts.append(f"Track: {track.trackNumber}")
-
-            # Quality
-            quality_tags = []
-            if "HIRES_LOSSLESS" in track.mediaMetadata.tags:
-                quality_tags.append("Hi-Res")
-            elif "LOSSLESS" in track.mediaMetadata.tags:
-                quality_tags.append("Lossless")
-            if "DOLBY_ATMOS" in track.mediaMetadata.tags:
-                quality_tags.append("Atmos")
-            if quality_tags:
-                parts.append(f"Quality: {', '.join(quality_tags)}")
-
-            # Duration
-            duration_min = track.duration // 60
-            duration_sec = track.duration % 60
-            parts.append(f"Duration: {duration_min}:{duration_sec:02d}")
-
-            # Additional metadata
-            if track.bpm:
-                parts.append(f"BPM: {track.bpm}")
-            if track.key:
-                parts.append(f"Key: {track.key}")
-            if track.explicit:
-                parts.append("Explicit")
-
-            return " | ".join(parts)
+                # Format using the template
+                formatted = format_template.format(**template_data)
+                return formatted
+            except (KeyError, AttributeError) as e:
+                # Fallback to basic format if template fails
+                return f"Error formatting track {track.id}: {e}"
 
         def format_video_line(video: Video) -> str:
-            """Format video information as a single line."""
-            parts = [
-                f"ID: {video.id}",
-                f"Title: {video.title}",
-            ]
+            """Format video information using the template (if videos are included)."""
+            try:
+                # Generate template data for video
+                template_data = generate_template_data(
+                    item=video,
+                    quality=video.quality or "UNKNOWN",
+                )
 
-            # Artist(s)
-            if video.artist:
-                parts.append(f"Artist: {video.artist.name}")
-            elif video.artists:
-                artist_names = ", ".join(a.name for a in video.artists)
-                parts.append(f"Artists: {artist_names}")
-
-            # Quality
-            if video.quality:
-                parts.append(f"Quality: {video.quality}")
-
-            # Duration
-            duration_min = video.duration // 60
-            duration_sec = video.duration % 60
-            parts.append(f"Duration: {duration_min}:{duration_sec:02d}")
-
-            if video.explicit:
-                parts.append("Explicit")
-
-            return " | ".join(parts)
+                # Format using the template
+                formatted = format_template.format(**template_data)
+                return formatted
+            except (KeyError, AttributeError) as e:
+                # Fallback to basic format if template fails
+                return f"Error formatting video {video.id}: {e}"
 
         def list_track(resource: TidalResource):
             """List a single track."""
@@ -137,11 +102,6 @@ def list_callback(
         def list_album(resource: TidalResource):
             """List all tracks in an album."""
             album = ctx.obj.api.get_album(resource.id)
-            ctx.obj.console.print(f"\n[bold]Album:[/] {album.title}")
-            ctx.obj.console.print(
-                f"[bold]Artist:[/] {album.artist.name if album.artist else 'Various'}"
-            )
-            ctx.obj.console.print(f"[bold]Tracks:[/] {album.numberOfTracks}\n")
 
             offset = 0
             while True:
@@ -155,9 +115,7 @@ def list_callback(
                     if isinstance(item, Video):
                         if VIDEOS_FILTER == "none":
                             continue
-                        ctx.obj.console.print(
-                            f"[cyan][VIDEO][/] {format_video_line(item)}"
-                        )
+                        ctx.obj.console.print(format_video_line(item))
                     elif isinstance(item, Track):
                         if VIDEOS_FILTER == "only":
                             continue
@@ -171,8 +129,6 @@ def list_callback(
         def list_playlist(resource: TidalResource):
             """List all tracks in a playlist."""
             playlist = ctx.obj.api.get_playlist(resource.id)
-            ctx.obj.console.print(f"\n[bold]Playlist:[/] {playlist.title}")
-            ctx.obj.console.print(f"[bold]Tracks:[/] {playlist.numberOfTracks}\n")
 
             offset = 0
             while True:
@@ -186,9 +142,7 @@ def list_callback(
                     if isinstance(item, Video):
                         if VIDEOS_FILTER == "none":
                             continue
-                        ctx.obj.console.print(
-                            f"[cyan][VIDEO][/] {format_video_line(item)}"
-                        )
+                        ctx.obj.console.print(format_video_line(item))
                     elif isinstance(item, Track):
                         if VIDEOS_FILTER == "only":
                             continue
@@ -202,54 +156,61 @@ def list_callback(
                 offset += playlist_items.limit
 
         def list_artist(resource: TidalResource):
-            """List all albums and tracks by an artist."""
+            """List all tracks from an artist's albums."""
             artist = ctx.obj.api.get_artist(resource.id)
-            ctx.obj.console.print(f"\n[bold]Artist:[/] {artist.name}\n")
 
-            # List albums
-            ctx.obj.console.print("[bold]Albums:[/]")
-            offset = 0
-            while True:
-                artist_albums = ctx.obj.api.get_artist_albums(
-                    artist_id=artist.id,
-                    filter="ALBUMS",
-                    offset=offset,
-                )
-
-                for album in artist_albums.items:
-                    ctx.obj.console.print(
-                        f"  • {album.title} ({album.releaseDate.year}) - {album.numberOfTracks} tracks"
-                    )
-
-                if len(artist_albums.items) < artist_albums.limit:
-                    break
-
-                offset += artist_albums.limit
-
-            # List singles/EPs if requested
-            if SINGLES_FILTER in ["epsandsingles", "all"]:
-                ctx.obj.console.print("\n[bold]EPs & Singles:[/]")
+            # Helper to list all tracks from albums
+            def list_albums_tracks(filter_type: str):
                 offset = 0
                 while True:
-                    artist_singles = ctx.obj.api.get_artist_albums(
+                    artist_albums = ctx.obj.api.get_artist_albums(
                         artist_id=artist.id,
-                        filter="EPSANDSINGLES",
+                        filter=filter_type,
                         offset=offset,
                     )
 
-                    for album in artist_singles.items:
-                        ctx.obj.console.print(
-                            f"  • {album.title} ({album.releaseDate.year}) - {album.numberOfTracks} tracks"
-                        )
+                    for album in artist_albums.items:
+                        # List all tracks in this album
+                        album_offset = 0
+                        while True:
+                            album_items = ctx.obj.api.get_album_items(
+                                album_id=album.id, offset=album_offset
+                            )
 
-                    if len(artist_singles.items) < artist_singles.limit:
+                            for album_item in album_items.items:
+                                item = album_item.item
+
+                                if isinstance(item, Video):
+                                    if VIDEOS_FILTER == "none":
+                                        continue
+                                    ctx.obj.console.print(format_video_line(item))
+                                elif isinstance(item, Track):
+                                    if VIDEOS_FILTER == "only":
+                                        continue
+                                    ctx.obj.console.print(
+                                        format_track_line(item, album)
+                                    )
+
+                            if len(album_items.items) < album_items.limit:
+                                break
+
+                            album_offset += album_items.limit
+
+                    if len(artist_albums.items) < artist_albums.limit:
                         break
 
-                    offset += artist_singles.limit
+                    offset += artist_albums.limit
+
+            # List albums
+            if VIDEOS_FILTER != "only":
+                list_albums_tracks("ALBUMS")
+
+                # List singles/EPs if requested
+                if SINGLES_FILTER in ["only", "include"]:
+                    list_albums_tracks("EPSANDSINGLES")
 
             # List videos if requested
             if VIDEOS_FILTER in ["allow", "only"]:
-                ctx.obj.console.print("\n[bold]Videos:[/]")
                 offset = 0
                 while True:
                     artist_videos = ctx.obj.api.get_artist_videos(
@@ -258,7 +219,7 @@ def list_callback(
                     )
 
                     for video in artist_videos.items:
-                        ctx.obj.console.print(f"  • {format_video_line(video)}")
+                        ctx.obj.console.print(format_video_line(video))
 
                     if len(artist_videos.items) < artist_videos.limit:
                         break
@@ -267,8 +228,6 @@ def list_callback(
 
         def list_mix(resource: TidalResource):
             """List all tracks in a mix."""
-            ctx.obj.console.print(f"\n[bold]Mix:[/] {resource.id}\n")
-
             offset = 0
             while True:
                 mix_items = ctx.obj.api.get_mix_items(mix_id=resource.id, offset=offset)
@@ -279,9 +238,7 @@ def list_callback(
                     if isinstance(item, Video):
                         if VIDEOS_FILTER == "none":
                             continue
-                        ctx.obj.console.print(
-                            f"[cyan][VIDEO][/] {format_video_line(item)}"
-                        )
+                        ctx.obj.console.print(format_video_line(item))
                     elif isinstance(item, Track):
                         if VIDEOS_FILTER == "only":
                             continue
