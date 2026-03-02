@@ -70,6 +70,24 @@ class Config(BaseModel):
             # convert to absolute, expand ~, normalize
             return Path(v).expanduser().resolve() if isinstance(v, str) else v
 
+        class DownloadTemplatesConfig(BaseModel):
+            default: str = "{album.artists}/{album.date:%Y} - {album.title}/{item.number:02d} {item.title}"
+            track: str = ""
+            video: str = ""
+            album: str = ""
+            playlist: str = ""
+            mix: str = ""
+
+            def model_post_init(self, __context):
+                assert self.default != "", "Default template cannot be empty."
+
+                # override templates to default
+                for field in ["track", "video", "album", "playlist", "mix"]:
+                    if getattr(self, field) == "":
+                        setattr(self, field, self.default)
+
+        templates: DownloadTemplatesConfig = DownloadTemplatesConfig()
+
     download: DownloadConfig = DownloadConfig()
 
     class M3UConfig(BaseModel):
@@ -85,24 +103,6 @@ class Config(BaseModel):
         templates: M3UTemplatesConfig = M3UTemplatesConfig()
 
     m3u: M3UConfig = M3UConfig()
-
-    class TemplatesConfig(BaseModel):
-        default: str = "{album.artists}/{album.date:%Y} - {album.title}/{item.number:02d} {item.title}"
-        track: str = ""
-        video: str = ""
-        album: str = ""
-        playlist: str = ""
-        mix: str = ""
-
-        def model_post_init(self, __context):
-            assert self.default != "", "Default template cannot be empty."
-
-            # override templates to default
-            for field in ["track", "video", "album", "playlist", "mix"]:
-                if getattr(self, field) == "":
-                    setattr(self, field, self.default)
-
-    templates: TemplatesConfig = TemplatesConfig()
 
     class ListConfig(BaseModel):
         format: str = "{item.id} | {item.artist} | {album.title} | {item.number:02d} | {item.title}"

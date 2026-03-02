@@ -306,7 +306,7 @@ def download_callback(
 
                     for album_item in album_items.items:
                         try:
-                            template = TEMPLATE or CONFIG.templates.album
+                            template = TEMPLATE or CONFIG.download.templates.album
                             file_path = format_template(
                                 template=template,
                                 item=album_item.item,
@@ -390,7 +390,7 @@ def download_callback(
                     await handle_item(
                         item=track,
                         file_path=format_template(
-                            template=TEMPLATE or CONFIG.templates.track,
+                            template=TEMPLATE or CONFIG.donload.templates.track,
                             item=track,
                             album=album,
                             quality=get_item_quality(track),
@@ -442,7 +442,7 @@ def download_callback(
                         mix_items = ctx.obj.api.get_mix_items(resource.id, offset=0)
 
                         for mix_item in mix_items.items:
-                            template = TEMPLATE or CONFIG.templates.mix
+                            template = TEMPLATE or CONFIG.download.templates.mix
 
                             try:
                                 if "{album" in template:
@@ -546,7 +546,7 @@ def download_callback(
                             )
 
                             for video in artist_videos.items:
-                                template = TEMPLATE or CONFIG.templates.video
+                                template = TEMPLATE or CONFIG.download.templates.video
 
                                 try:
                                     if "{album" in template and video.album:
@@ -608,7 +608,7 @@ def download_callback(
 
                         for playlist_item in playlist_items.items:
                             playlist_index += 1
-                            template = TEMPLATE or CONFIG.templates.playlist
+                            template = TEMPLATE or CONFIG.download.templates.playlist
 
                             try:
                                 if "{album" in template:

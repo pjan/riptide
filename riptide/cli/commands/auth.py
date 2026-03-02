@@ -99,6 +99,15 @@ def refresh(
             metavar="seconds",
         ),
     ] = 0,
+    SILENT: Annotated[
+        bool,
+        typer.Option(
+            "--silent",
+            "-s",
+            help="Suppress output messages",
+            hidden=True,
+        ),
+    ] = False,
 ):
     loaded_auth_data = load_auth_data()
 
@@ -107,13 +116,14 @@ def refresh(
         raise typer.Exit()
 
     if time() < (loaded_auth_data.expires_at - EARLY_EXPIRE_TIME) and not FORCE:
-        expiry_time = datetime.fromtimestamp(loaded_auth_data.expires_at)
-        remaining = expiry_time - datetime.now()
-        hours, remainder = divmod(remaining.seconds, 3600)
-        minutes, _ = divmod(remainder, 60)
-        console.print(
-            f"[green]Auth token expires in {remaining.days}d {hours}h {minutes}m"
-        )
+        if not SILENT:
+            expiry_time = datetime.fromtimestamp(loaded_auth_data.expires_at)
+            remaining = expiry_time - datetime.now()
+            hours, remainder = divmod(remaining.seconds, 3600)
+            minutes, _ = divmod(remainder, 60)
+            console.print(
+                f"[green]Auth token expires in {remaining.days}d {hours}h {minutes}m"
+            )
         return
 
     auth_api = AuthAPI()
@@ -124,4 +134,5 @@ def refresh(
 
     save_auth_data(loaded_auth_data)
 
-    console.print("[bold green]Auth token has been refreshed!")
+    if not SILENT:
+        console.print("[bold green]Auth token has been refreshed!")

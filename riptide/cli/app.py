@@ -34,7 +34,7 @@ def callback(
     """
     riptide - a CLI to download tidal tracks \u266b
 
-    [link=https://github.com/pjan/riptide]github[/link] \u2764
+     \u2764 [link=https://github.com/pjan/riptide]github[/link]
     """
 
     log.debug(f"{ctx.params=}")

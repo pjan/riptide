@@ -49,7 +49,7 @@ def list_callback(
     List information about Tidal resources.
     """
 
-    ctx.invoke(refresh, EARLY_EXPIRE_TIME=600)
+    ctx.invoke(refresh, EARLY_EXPIRE_TIME=600, SILENT=True)
 
     # Use provided format, or fall back to config, or fall back to default
     format_template = FORMAT or CONFIG.list.format
