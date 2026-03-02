@@ -60,11 +60,6 @@ class Track(BaseModel):
     album: Album
     mixes: Optional[Dict[str, str]] = None
 
-    @property
-    def full_name(self) -> str:
-        """Returns the full name of the track, combining title and version if present."""
-        return f"{self.title} ({self.version})" if self.version else self.title
-
 
 class Video(BaseModel):
     class Artist(BaseModel):
