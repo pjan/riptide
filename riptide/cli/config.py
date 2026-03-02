@@ -28,6 +28,7 @@ class Config(BaseModel):
         lyrics: bool = True
         cover: bool = True
         album_review: bool = False
+        save_lyrics_to_lrc: bool = True
 
     metadata: MetadataConfig = MetadataConfig()
 

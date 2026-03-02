@@ -85,7 +85,7 @@ default = "{album.artist}/{album.title}/{item.title}"
 enable = true
 
 # embed lyrics in metadata
-lyrics = false
+lyrics = true
 
 # embed track cover in the track file
 cover = false
@@ -93,6 +93,10 @@ cover = false
 # embed album review text to track COMMENT metadata field.
 # only works when downloading album
 album_review = false
+
+# save lyrics to a separate .lrc file with the same name as the track
+# the .lrc file will be saved in the same directory as the track
+save_lyrics_to_lrc = true
 
 
 [cover]

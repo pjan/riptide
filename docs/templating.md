@@ -30,37 +30,39 @@ Each object type exposes fields you can use inside templates.
 
 | Field                        | Description                            | Example                         | Type |
 | ---------------------------- | -------------------------------------- | ------------------------------- | ---- |
-| `item.id`                    | Track/Video ID                         | `1845520` | int  |
-| `item.title`                 | Title                                  | `Pull Me Under` | str  |
-| `item.title_version`         | Title + version (if present)           | `Pull Me Under` | str  |
-| `item.number`                | Track number                           | `1` | int  |
-| `item.volume`                | Disc/volume number                     | `1` | int  |
-| `item.version`               | Version string (track only)            | `Remastered` | str  |
-| `item.copyright`             | Copyright info (track only)            | `℗ 1992  Atlantic Recording Corporation for the United States and WEA International Inc. for the world outside of the United States.` | str  |
-| `item.bpm`                   | Beats per minute (if available)        | `102` | int  |
-| `item.isrc`                  | ISRC code (track only)                 | `USEE10180251` | str  |
-| `item.quality`               | Audio/video quality                    | `LOSSLESS` | str  |
-| `item.artist`                | Primary artist name                    | `Dream Theater` | str  |
-| `item.artists`               | All main artists                       | `Dream Theater` | str  |
-| `item.features`              | Featured artists                       | `Pharrell Williams` | str  |
-| `item.artists_with_features` | Main + featured artists                | `Dream Theater` | str  |
-| `item.explicit`              | Explicit content                       | `clean` | str  |
-| `item.dolby:(Dolby Atmos)`   | Dolby Atmos (track only, `UserFormat`) | `(Dolby Atmos)` | str  |
+| `item.id`                    | Track/Video ID                         | `1845520`                       | int  |
+| `item.title`                 | Title                                  | `Pull Me Under`                 | str  |
+| `item.title_version`         | Title + version (if present)           | `Pull Me Under`                 | str  |
+| `item.number`                | Track number                           | `1`                             | int  |
+| `item.volume`                | Disc/volume number                     | `1`                             | int  |
+| `item.version`               | Version string (track only)            | `Remastered`                    | str  |
+| `item.copyright`             | Copyright info (track only)            | `℗ 1992  Atlantic Recording.`   | str  |
+| `item.bpm`                   | Beats per minute (if available)        | `102`                           | int  |
+| `item.isrc`                  | ISRC code (track only)                 | `USEE10180251`                  | str  |
+| `item.quality`               | Audio/video quality                    | `LOSSLESS`                      | str  |
+| `item.artist`                | Primary artist name                    | `Dream Theater`                 | str  |
+| `item.artists`               | All main artists                       | `Dream Theater`                 | str  |
+| `item.features`              | Featured artists                       | ``                              | str  |
+| `item.artists_with_features` | Main + featured artists                | `Dream Theater`                 | str  |
+| `item.explicit`              | Explicit content                       | `clean`                         | str  |
+| `item.explicit:long`         | Explicit content (long)                | ``                              | str  |
+| `item.explicit:full`         | Explicit content (full)                | `clean`                         | str  |
+| `item.dolby:(Dolby Atmos)`   | Dolby Atmos (track only, `UserFormat`) | `(Dolby Atmos)`                 | str  |
 
 ---
 
 ### `album`
 
-| Field                | Description                         | Example           | Type     |
-| -------------------- | ----------------------------------- | ----------------- | -------- |
-| `album.id`           | Album ID                            | `1845519` | int      |
+| Field                | Description                         | Example            | Type     |
+| -------------------- | ----------------------------------- | ------------------ | -------- |
+| `album.id`           | Album ID                            | `1845519`          | int      |
 | `album.title`        | Album title                         | `Images and Words` | str      |
-| `album.artist`       | Primary artist                      | `Dream Theater` | str      |
-| `album.artists`      | All main artists                    | `Dream Theater` | str      |
-| `album.date`         | Release date                        | `1992-01-01` | datetime |
-| `album.explicit`     | Explicit content                    | `clean` | str      |
-| `album.master:[MAX]` | Is album max quality (`UserFormat`) | `[MAX]` | str      |
-| `album.release`      | Release type                        | `ALBUM` | str      |
+| `album.artist`       | Primary artist                      | `Dream Theater`    | str      |
+| `album.artists`      | All main artists                    | `Dream Theater`    | str      |
+| `album.date`         | Release date                        | `1992-01-01`       | datetime |
+| `album.explicit`     | Explicit content                    | `clean`            | str      |
+| `album.master:[MAX]` | Is album max quality (`UserFormat`) | `[MAX]`            | str      |
+| `album.release`      | Release type                        | `ALBUM`            | str      |
 
 ---
 

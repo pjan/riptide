@@ -11,6 +11,23 @@ from mutagen.mp4 import MP4Cover
 from riptide.core.api.models import AlbumItemsCredits, Track
 
 
+def save_lyrics_to_lrc(track_path: Path, lyrics: str) -> None:
+    """Save lyrics to a .lrc file with the same name as the track.
+
+    Args:
+        track_path: Path to the track file
+        lyrics: Lyrics content (subtitles format from Tidal API)
+    """
+    if not lyrics:
+        return
+
+    # Create .lrc file path (same name as track, but with .lrc extension)
+    lrc_path = track_path.with_suffix(".lrc")
+
+    # Write lyrics to file
+    lrc_path.write_text(lyrics, encoding="utf-8")
+
+
 @dataclass(slots=True)
 class Metadata:
     title: str

@@ -21,7 +21,12 @@ from riptide.cli.ctx import Context
 from riptide.cli.utils.resource import TidalResource
 from riptide.core.api import ApiError
 from riptide.core.api.models import Album, AlbumItemsCredits, Track, Video
-from riptide.core.metadata import Cover, add_track_metadata, add_video_metadata
+from riptide.core.metadata import (
+    Cover,
+    add_track_metadata,
+    add_video_metadata,
+    save_lyrics_to_lrc,
+)
 from riptide.core.utils.format import format_template
 from riptide.core.utils.m3u import save_tracks_to_m3u
 
@@ -234,12 +239,12 @@ def download_callback(
                 ):
                     if isinstance(item, Track):
                         lyrics_subtitles = ""
+                        track_lyrics = None
 
-                        if CONFIG.metadata.lyrics:
+                        if CONFIG.metadata.lyrics or CONFIG.metadata.save_lyrics_to_lrc:
                             try:
-                                lyrics_subtitles = ctx.obj.api.get_track_lyrics(
-                                    item.id
-                                ).subtitles
+                                track_lyrics = ctx.obj.api.get_track_lyrics(item.id)
+                                lyrics_subtitles = track_lyrics.subtitles
                             except Exception as e:
                                 log.error(e)
 
@@ -267,6 +272,15 @@ def download_callback(
                             credits_contributors=track_metadata.credits,
                             comment=track_metadata.album_review,
                         )
+
+                        # Save lyrics to .lrc file if enabled
+                        if CONFIG.metadata.save_lyrics_to_lrc and track_lyrics:
+                            try:
+                                save_lyrics_to_lrc(
+                                    download_path, track_lyrics.subtitles
+                                )
+                            except Exception as e:
+                                log.error(f"Failed to save lyrics: {e}")
 
                     elif isinstance(item, Video):
                         add_video_metadata(path=download_path, video=item)
@@ -390,7 +404,7 @@ def download_callback(
                     await handle_item(
                         item=track,
                         file_path=format_template(
-                            template=TEMPLATE or CONFIG.donload.templates.track,
+                            template=TEMPLATE or CONFIG.download.templates.track,
                             item=track,
                             album=album,
                             quality=get_item_quality(track),
