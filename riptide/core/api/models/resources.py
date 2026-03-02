@@ -12,7 +12,6 @@ MediaMetadataTags = Literal["LOSSLESS", "HIRES_LOSSLESS", "DOLBY_ATMOS"]
 
 
 class Track(BaseModel):
-
     class Artist(BaseModel):
         id: int
         name: str
@@ -59,9 +58,13 @@ class Track(BaseModel):
     album: Album
     mixes: Optional[Dict[str, str]] = None
 
+    @property
+    def full_name(self) -> str:
+        """Returns the full name of the track, combining title and version if present."""
+        return f"{self.title} ({self.version})" if self.version else self.title
+
 
 class Video(BaseModel):
-
     class Artist(BaseModel):
         id: int
         name: str
@@ -102,7 +105,6 @@ class Video(BaseModel):
 
 
 class Album(BaseModel):
-
     class Artist(BaseModel):
         id: int
         name: str
@@ -145,7 +147,6 @@ class Album(BaseModel):
 
 
 class Playlist(BaseModel):
-
     class Creator(BaseModel):
         id: int
 
@@ -169,7 +170,6 @@ class Playlist(BaseModel):
 
 
 class Artist(BaseModel):
-
     class Role(BaseModel):
         categoryId: int
         category: Literal[
