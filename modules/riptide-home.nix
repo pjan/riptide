@@ -8,8 +8,18 @@ let
   # TOML format helper
   tomlFormat = pkgs.formats.toml {};
 
-  # Build the config TOML from user settings
-  configToml = optionalString (cfg.settings != {}) (tomlFormat.generate "config.toml" cfg.settings);
+  # Recursively filter out null values from attribute sets
+  filterNulls = attrs:
+    if isAttrs attrs then
+      let
+        filtered = filterAttrs (n: v: v != null) attrs;
+      in
+      mapAttrs (n: v: if isAttrs v then filterNulls v else v) filtered
+    else
+      attrs;
+
+  # Build the config TOML from user settings with nulls filtered out
+  cleanedSettings = filterNulls cfg.settings;
 in
 {
   options.programs.riptide = {
@@ -291,7 +301,7 @@ in
     home.packages = [ cfg.package ];
 
     xdg.configFile."riptide/config.toml" = mkIf (cfg.settings != {}) {
-      source = tomlFormat.generate "config.toml" cfg.settings;
+      source = tomlFormat.generate "config.toml" cleanedSettings;
     };
 
     # Linux: systemd service
