@@ -5,11 +5,11 @@ with lib;
 let
   cfg = config.programs.riptide;
 
-  # Helper to convert Nix attribute set to TOML
-  toTOML = attrs: lib.generators.toTOML {} attrs;
+  # TOML format helper
+  tomlFormat = pkgs.formats.toml {};
 
   # Build the config TOML from user settings
-  configToml = optionalString (cfg.settings != {}) (toTOML cfg.settings);
+  configToml = optionalString (cfg.settings != {}) (tomlFormat.generate "config.toml" cfg.settings);
 in
 {
   options.programs.riptide = {
@@ -287,7 +287,7 @@ in
     home.packages = [ cfg.package ];
 
     xdg.configFile."riptide/config.toml" = mkIf (cfg.settings != {}) {
-      text = configToml;
+      source = tomlFormat.generate "config.toml" cfg.settings;
     };
   };
 }
