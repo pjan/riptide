@@ -6,7 +6,7 @@ let
   cfg = config.programs.riptide;
 
   # Helper to convert Nix attribute set to TOML
-  toTOML = attrs: generators.toTOML {} attrs;
+  toTOML = attrs: lib.generators.toTOML {} attrs;
 
   # Build the config TOML from user settings
   configToml = optionalString (cfg.settings != {}) (toTOML cfg.settings);
