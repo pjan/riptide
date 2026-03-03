@@ -145,14 +145,14 @@ in
                 };
 
                 download_path = mkOption {
-                  type = types.str;
-                  default = "\${HOME}/Downloads/riptide";
+                  type = types.nullOr types.str;
+                  default = null;
                   description = "Base directory for downloads.";
                 };
 
                 scan_path = mkOption {
-                  type = types.str;
-                  default = "\${HOME}/Downloads/riptide";
+                  type = types.nullOr types.str;
+                  default = null;
                   description = "Directory to scan for existing downloads.";
                 };
 
