@@ -154,3 +154,24 @@ mix = "m3u/{type}/{now:%x}"
 # available fields: item.id, item.title, item.artist, album.title, item.number, etc.
 # see https://github.com/pjan/riptide/blob/main/docs/templating.md for all fields
 format = "{item.id} | {item.artist} | {album.title} | {item.number:02d} | {item.title}"
+
+
+[listener]
+# HTTP listener server configuration for accepting download requests via API
+# The listener allows external applications to submit download URLs
+
+# Port for the HTTP listener server to bind to
+port = 8123
+
+# Secret for authenticating API requests via X-Auth header
+# If empty, authentication is disabled and all requests are accepted
+# If set, clients must include X-Auth header matching this value
+# Example: secret = "your-secret-key-here"
+secret = ""
+
+# Number of tracks to download in parallel within each resource (album/playlist/etc.)
+# Set to 1 for sequential track downloads (one track at a time)
+# Set higher (e.g., 3, 5) to download multiple tracks simultaneously
+# Resources are always processed one at a time from the queue
+# This is equivalent to threads_count but specific to the listener
+concurrent_downloads = 1

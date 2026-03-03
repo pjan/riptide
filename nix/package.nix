@@ -19,6 +19,7 @@ python3.pkgs.buildPythonApplication rec {
   dependencies = with python3.pkgs; [
     aiofiles
     aiohttp
+    flask
     m3u8
     mutagen
     pydantic

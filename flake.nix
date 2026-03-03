@@ -31,6 +31,7 @@
           ] ++ (with pkgs.python313Packages; [
             aiofiles
             aiohttp
+            flask
             m3u8
             mutagen
             pydantic

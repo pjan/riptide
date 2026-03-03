@@ -110,6 +110,13 @@ class Config(BaseModel):
 
     list: ListConfig = ListConfig()
 
+    class ListenerConfig(BaseModel):
+        port: int = 8123
+        secret: str = ""
+        concurrent_downloads: int = 4
+
+    listener: ListenerConfig = ListenerConfig()
+
 
 def load_config_file(config_file: Path) -> Config:
     log.debug(f"loading '{config_file}'")

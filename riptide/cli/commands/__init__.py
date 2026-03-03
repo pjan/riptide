@@ -3,6 +3,7 @@ from typer import Typer
 from .auth import auth_command
 from .download import download_command
 from .list import list_command
+from .listen import listen_command
 
 # from .export import export_command
 
@@ -10,6 +11,7 @@ COMMANDS = [
     auth_command,
     download_command,
     list_command,
+    listen_command,
     # export_command
 ]
 
