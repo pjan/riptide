@@ -3,34 +3,39 @@
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
-    flake-utils.url = "github:numtide/flake-utils";
+    systems.url = "github:nix-systems/default";
   };
 
-  outputs = { self, nixpkgs, flake-utils }:
-    flake-utils.lib.eachDefaultSystem (system:
+  outputs =
+    {
+      self,
+      nixpkgs,
+      systems,
+    }:
       let
-        pkgs = nixpkgs.legacyPackages.${system};
+        eachSystem = nixpkgs.lib.genAttrs (import systems);
       in
       {
-        packages = {
-          riptide = pkgs.callPackage ./nix/package.nix { };
-          default = self.packages.riptide;
-        };
 
-        apps = {
-          default = {
-            type = "app";
-            program = "${self.packages.${system}.default}/bin/riptide";
-          };
-        };
-
-        homeManagerModules = {
+        homeManagerModules ={
           riptide = ./modules/riptide-home.nix;
           default = self.homeManagerModules.riptide;
         };
 
-        devShells.default = pkgs.mkShell {
-          buildInputs = with pkgs; [
+        packages = eachSystem (system: {
+          riptide = nixpkgs.legacyPackages.${system}.callPackage ./nix/package.nix { };
+          default = self.packages.${system}.riptide;
+        });
+
+        apps = eachSystem (system: {
+          default = {
+            type = "app";
+            program = "${self.packages.${system}.default}/bin/riptide";
+          };
+        });
+
+        devShells.default = eachSystem (system: nixpkgs.legacyPackages.${system}.mkShell {
+          buildInputs = with nixpkgs.legacyPackages.${system}; [
             python313
             ffmpeg
           ] ++ (with pkgs.python313Packages; [
@@ -52,7 +57,6 @@
             echo " > Python: $(python --version)"
             echo " > FFmpeg: $(ffmpeg -version | head -n1)"
           '';
-        };
-      }
-    );
+        });
+      };
 }
