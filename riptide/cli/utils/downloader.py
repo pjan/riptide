@@ -219,10 +219,15 @@ class ResourceDownloader:
     async def _download_track(self, resource: TidalResource) -> None:
         """Download a single track."""
         track = self.ctx_obj.api.get_track(int(resource.id))
+
+        # Fetch album info for proper path generation
+        album = self.ctx_obj.api.get_album(track.album.id)
+
         template = self.template or CONFIG.download.templates.track
         file_path = format_template(
             template=template,
             item=track,
+            album=album,
             quality=self.get_item_quality(track),
         )
 
