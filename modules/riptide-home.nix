@@ -22,6 +22,10 @@ in
       description = "The riptide package to use.";
     };
 
+    service = {
+      enable = mkEnableOption "riptide listener service";
+    };
+
     settings = mkOption {
       type = types.submodule {
         freeformType = (pkgs.formats.toml {}).type;
@@ -288,6 +292,39 @@ in
 
     xdg.configFile."riptide/config.toml" = mkIf (cfg.settings != {}) {
       source = tomlFormat.generate "config.toml" cfg.settings;
+    };
+
+    # Linux: systemd service
+    systemd.user.services.riptide-listener = mkIf (cfg.service.enable && pkgs.stdenv.isLinux) {
+      Unit = {
+        Description = "Riptide Listener - HTTP API for downloading Tidal tracks";
+        After = [ "network-online.target" ];
+        Wants = [ "network-online.target" ];
+      };
+
+      Service = {
+        Type = "simple";
+        ExecStart = "${cfg.package}/bin/riptide listen";
+        Restart = "on-failure";
+        RestartSec = "10s";
+      };
+    };
+
+    # macOS: launchd service
+    launchd.agents.riptide-listener = mkIf (cfg.service.enable && pkgs.stdenv.isDarwin) {
+      enable = true;
+      config = {
+        ProgramArguments = [ "${cfg.package}/bin/riptide" "listen" ];
+        Label = "org.riptide.listener";
+        RunAtLoad = true;
+        KeepAlive = {
+          Crashed = true;
+          SuccessfulExit = false;
+        };
+        ProcessType = "Background";
+        StandardOutPath = "${config.home.homeDirectory}/Library/Logs/riptide-listener.log";
+        StandardErrorPath = "${config.home.homeDirectory}/Library/Logs/riptide-listener.log";
+      };
     };
   };
 }

@@ -54,6 +54,29 @@ Configure riptide settings directly in your Home Manager configuration:
 }
 ```
 
+### With Listener Service
+
+Enable the listener to run automatically on startup:
+
+```nix
+{
+  programs.riptide = {
+    enable = true;
+    service.enable = true;  # Auto-start listener
+    settings = {
+      listener = {
+        port = 8123;
+        secret = "my-secret-key";
+        concurrent_downloads = 5;
+      };
+      download = {
+        download_path = "${config.home.homeDirectory}/Music/Tidal";
+      };
+    };
+  };
+}
+```
+
 ### Using a Specific Package
 
 If you want to use a custom or overridden riptide package:
@@ -92,6 +115,14 @@ The `riptide` command will be available in your PATH.
 - **Type:** `package`
 - **Default:** `pkgs.riptide`
 - **Description:** The riptide package to use.
+
+### `programs.riptide.service.enable`
+
+- **Type:** `boolean`
+- **Default:** `false`
+- **Description:** Whether to enable the riptide listener service. When enabled, runs `riptide listen` as a background service that starts automatically.
+  - **Linux**: Uses systemd user service
+  - **macOS**: Uses launchd agent
 
 ### `programs.riptide.settings`
 
@@ -284,10 +315,106 @@ Set up the listener for browser extension integration:
 }
 ```
 
+### Listener Service (Auto-start)
+
+Enable the listener as a systemd service that starts automatically:
+
+```nix
+{
+  programs.riptide = {
+    enable = true;
+    service.enable = true;  # Start listener on login
+    settings = {
+      listener = {
+        port = 8123;
+        secret = "my-secret-key";
+        concurrent_downloads = 5;
+      };
+      download = {
+        download_path = "${config.home.homeDirectory}/Music/Tidal";
+      };
+    };
+  };
+}
+```
+
+The service will:
+- Start automatically when you log in
+- Restart on failure
+- Run in the background listening for download requests
+
+**On Linux**, check service status with:
+```bash
+systemctl --user status riptide-listener
+journalctl --user -u riptide-listener -f
+```
+
+**On macOS**, check service status with:
+```bash
+launchctl list | grep riptide
+tail -f ~/Library/Logs/riptide-listener.log
+```
+
+## Service Management
+
+When `service.enable` is true, you can manage the listener service:
+
+### Linux (systemd)
+
+```bash
+# Check status
+systemctl --user status riptide-listener
+
+# View logs
+journalctl --user -u riptide-listener -f
+
+# Restart service
+systemctl --user restart riptide-listener
+
+# Stop service
+systemctl --user stop riptide-listener
+
+# Start service
+systemctl --user start riptide-listener
+```
+
+The systemd service runs with security hardening:
+- Private `/tmp` directory
+- Read-only home directory (except config and download paths)
+- No privilege escalation
+- System protection enabled
+
+### macOS (launchd)
+
+```bash
+# Check status
+launchctl list | grep riptide
+
+# View logs
+tail -f ~/Library/Logs/riptide-listener.log
+
+# Restart service
+launchctl kickstart -k gui/$(id -u)/org.riptide.listener
+
+# Stop service
+launchctl stop org.riptide.listener
+
+# Start service
+launchctl start org.riptide.listener
+
+# Unload (disable)
+launchctl unload ~/Library/LaunchAgents/org.riptide.listener.plist
+
+# Load (enable)
+launchctl load ~/Library/LaunchAgents/org.riptide.listener.plist
+```
+
+Logs are written to `~/Library/Logs/riptide-listener.log` on macOS.
+
 ## Future Enhancements
 
 Potential future additions:
-- `programs.riptide.enableListener` - Systemd service for listener mode
 - `programs.riptide.enableShellCompletion` - Shell completion scripts
+- `programs.riptide.service.verbose` - Enable verbose logging in service
 
 Contributions welcome!
