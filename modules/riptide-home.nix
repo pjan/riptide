@@ -332,6 +332,9 @@ in
           SuccessfulExit = false;
         };
         ProcessType = "Background";
+        EnvironmentVariables = {
+          RIPTIDE_PATH = "${config.home.homeDirectory}/.riptide";
+        };
         StandardOutPath = "${config.home.homeDirectory}/Library/Logs/riptide-listener.log";
         StandardErrorPath = "${config.home.homeDirectory}/Library/Logs/riptide-listener.log";
       };
