@@ -13,8 +13,8 @@
       in
       {
         packages = {
-          default = pkgs.callPackage ./nix/package.nix { };
-          riptide = self.packages.${system}.default;
+          riptide = pkgs.callPackage ./nix/package.nix { };
+          default = self.packages.${system}.riptide;
         };
 
         apps = {
@@ -22,6 +22,11 @@
             type = "app";
             program = "${self.packages.${system}.default}/bin/riptide";
           };
+        };
+
+        homeManagerModules = {
+          riptide = ./modules/riptide-home.nix;
+          default = self.homeManagerModules.riptide;
         };
 
         devShells.default = pkgs.mkShell {

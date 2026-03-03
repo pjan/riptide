@@ -99,7 +99,7 @@ Add riptide to your home-manager configuration:
           
           # Optional: Set default music directory
           home.sessionVariables = {
-            riptide_PATH = "${config.home.homeDirectory}/Music/.riptide";
+            RIPTIDE_PATH = "${config.home.homeDirectory}/Music/.riptide";
           };
         }
       ];
