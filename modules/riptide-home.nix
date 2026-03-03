@@ -333,7 +333,7 @@ in
         };
         ProcessType = "Background";
         EnvironmentVariables = {
-          RIPTIDE_PATH = "${config.home.homeDirectory}/.riptide";
+          RIPTIDE_PATH = "${config.home.homeDirectory}/.config/riptide";
         };
         StandardOutPath = "${config.home.homeDirectory}/Library/Logs/riptide-listener.log";
         StandardErrorPath = "${config.home.homeDirectory}/Library/Logs/riptide-listener.log";
