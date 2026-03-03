@@ -14,7 +14,7 @@
       {
         packages = {
           riptide = pkgs.callPackage ./nix/package.nix { };
-          default = self.packages.${system}.riptide;
+          default = self.packages.riptide;
         };
 
         apps = {
