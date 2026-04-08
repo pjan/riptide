@@ -21,3 +21,6 @@ jobs:
 
       - name: Build package
         run: nix build .#riptide
+
+      - name: Verify CLI runs
+        run: nix run .#riptide -- --help
