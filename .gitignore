@@ -336,9 +336,13 @@ temp/
 result
 result-*
 .direnv/
+docs/superpowers
 
 # ============================================================================
 # Project Specific
 # ============================================================================
+
+# Git worktrees
+.worktrees/
 
 # Add project-specific ignores below this line
