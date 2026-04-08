@@ -1,6 +1,17 @@
 {
   description = "riptide - CLI for downloading tidal tracks";
 
+  nixConfig = {
+    extra-substituters = [
+      "https://cache.nixos.org"
+      "s3://io-vandaele-nix-cache?endpoint=https://storage.googleapis.com&profile=gcp"
+    ];
+    extra-trusted-public-keys = [
+      "cache.nixos.org-1:6NCHdD59X431o0gWypbMrAURkbJ16ZPMQFGspcDShjY="
+      "io-vandaele-nix-cache:O9fdSbSnySVmQFa353NjmU/lP5GifyVfOmDM2XhBs8Q="
+    ];
+  };
+
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
     systems.url = "github:nix-systems/default";
