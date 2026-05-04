@@ -31,7 +31,7 @@ jobs:
             systems
 
       - name: Validate build with updated inputs
-        run: nix build .#riptide --dry-run
+        run: nix build .#riptide
 
       - name: Capture lock diff
         if: success()
