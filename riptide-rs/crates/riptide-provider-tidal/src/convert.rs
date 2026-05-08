@@ -103,22 +103,8 @@ pub fn album(album: TidalAlbum) -> TidalResult<Album> {
         title: album.title,
         artists: artists(album.artist, album.artists)?,
         release_date: album.release_date.as_deref().map(parse_date).transpose()?,
-        track_count: album
-            .number_of_tracks
-            .map(ItemCount::new)
-            .transpose()
-            .map_err(|error| TidalError::InvalidResponse {
-                field: "numberOfTracks".to_owned(),
-                message: error.to_string(),
-            })?,
-        video_count: album
-            .number_of_videos
-            .map(ItemCount::new)
-            .transpose()
-            .map_err(|error| TidalError::InvalidResponse {
-                field: "numberOfVideos".to_owned(),
-                message: error.to_string(),
-            })?,
+        track_count: album.number_of_tracks.map(ItemCount::new),
+        video_count: album.number_of_videos.map(ItemCount::new),
         explicit: album.explicit,
         release_type: album.release_type,
         hires_lossless: album
@@ -150,24 +136,17 @@ fn cover_art_id(value: String) -> TidalResult<CoverArtId> {
 
 /// Converts a TIDAL playlist.
 pub fn playlist(playlist: TidalPlaylist) -> TidalResult<Playlist> {
-    let item_count = playlist
-        .number_of_tracks
-        .unwrap_or(0)
-        .saturating_add(playlist.number_of_videos.unwrap_or(0));
+    let item_count = match (playlist.number_of_tracks, playlist.number_of_videos) {
+        (None, None) => None,
+        (tracks, videos) => Some(ItemCount::new(
+            tracks.unwrap_or(0).saturating_add(videos.unwrap_or(0)),
+        )),
+    };
     Ok(Playlist {
         id: media_ref(ResourceKind::Playlist, &playlist.uuid)?,
         title: playlist.title,
         owner: None,
-        item_count: if item_count == 0 {
-            None
-        } else {
-            Some(
-                ItemCount::new(item_count).map_err(|error| TidalError::InvalidResponse {
-                    field: "item_count".to_owned(),
-                    message: error.to_string(),
-                })?,
-            )
-        },
+        item_count,
         created_at: playlist
             .created
             .as_deref()
@@ -364,6 +343,22 @@ mod tests {
         }
     }
 
+    fn minimal_album() -> TidalAlbum {
+        TidalAlbum {
+            id: 1,
+            title: "Test Album".to_owned(),
+            release_date: Some("2024-01-15".to_owned()),
+            number_of_tracks: Some(12),
+            number_of_videos: Some(0),
+            explicit: Some(false),
+            cover: Some("abcdef12-3456-7890-abcd-ef1234567890".to_owned()),
+            release_type: Some("ALBUM".to_owned()),
+            artist: None,
+            artists: Vec::new(),
+            media_metadata: MediaMetadata::default(),
+        }
+    }
+
     #[test]
     fn track_converts_all_fields() -> TidalResult<()> {
         let result = track(minimal_track())?;
@@ -505,6 +500,19 @@ mod tests {
     }
 
     #[test]
+    fn album_converts_zero_video_count() -> TidalResult<()> {
+        let result = album(TidalAlbum {
+            number_of_tracks: Some(1),
+            number_of_videos: Some(0),
+            ..minimal_album()
+        })?;
+
+        assert_eq!(result.track_count.map(ItemCount::get), Some(1));
+        assert_eq!(result.video_count.map(ItemCount::get), Some(0));
+        Ok(())
+    }
+
+    #[test]
     fn playlist_converts_item_count() -> TidalResult<()> {
         let tidal_playlist = TidalPlaylist {
             uuid: "abc-123".to_owned(),
@@ -519,6 +527,21 @@ mod tests {
         assert_eq!(result.item_count.map(ItemCount::get), Some(15));
         assert!(result.created_at.is_some());
         assert!(result.updated_at.is_none());
+        Ok(())
+    }
+
+    #[test]
+    fn playlist_preserves_known_zero_item_count() -> TidalResult<()> {
+        let result = playlist(TidalPlaylist {
+            uuid: "abc-123".to_owned(),
+            title: "Empty Playlist".to_owned(),
+            number_of_tracks: Some(0),
+            number_of_videos: Some(0),
+            created: None,
+            last_updated: None,
+        })?;
+
+        assert_eq!(result.item_count.map(ItemCount::get), Some(0));
         Ok(())
     }
 

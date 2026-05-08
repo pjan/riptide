@@ -64,10 +64,22 @@ non_zero_u32_type!(
     /// One-based disc number.
     DiscNumber
 );
-non_zero_u32_type!(
-    /// Count of items in a provider collection.
-    ItemCount
-);
+
+/// Count of items in a provider collection. Zero is a valid known count.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+pub struct ItemCount(u32);
+
+impl ItemCount {
+    /// Creates a new item count.
+    pub const fn new(value: u32) -> Self {
+        Self(value)
+    }
+
+    /// Returns the stored count.
+    pub const fn get(self) -> u32 {
+        self.0
+    }
+}
 
 /// Bounded concurrency limit.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
@@ -133,7 +145,6 @@ mod tests {
     fn numeric_newtypes_reject_zero() {
         assert!(TrackNumber::new(0).is_err());
         assert!(DiscNumber::new(0).is_err());
-        assert!(ItemCount::new(0).is_err());
         assert!(BitDepth::new(0).is_err());
         assert!(SampleRateHz::new(0).is_err());
         assert!(ConcurrencyLimit::new(0).is_err());
@@ -144,6 +155,8 @@ mod tests {
         assert_eq!(TrackNumber::new(1)?.get(), 1);
         assert_eq!(BitDepth::new(24)?.get(), 24);
         assert_eq!(SampleRateHz::new(44_100)?.get(), 44_100);
+        assert_eq!(ItemCount::new(0).get(), 0);
+        assert_eq!(ItemCount::new(12).get(), 12);
         assert_eq!(ConcurrencyLimit::new(4)?.get(), 4);
         Ok(())
     }
