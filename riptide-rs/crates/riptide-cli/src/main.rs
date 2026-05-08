@@ -7,8 +7,9 @@ use riptide_config::{
     Concurrency, DownloadConfig, M3uConfig, MetadataConfig, ValidatedConfig, VideosMode,
 };
 use riptide_core::{
-    CatalogEntity, CollectionProvider, CoverArtId, LyricsProvider, MediaDuration, MediaRef,
-    QualityRequest, Resolver, StreamProvider, Track, Video,
+    Album, AudioQualityRequest, CatalogEntity, CollectionProvider, CoverArtId, LyricsProvider,
+    MediaDuration, MediaRef, ProviderQualityLabel, QualityRequest, Resolver, StreamProvider, Track,
+    Video,
 };
 use riptide_media::{
     download_segments, plan_download, post_process, resolve_manifest_async, DownloadOptions,
@@ -505,6 +506,10 @@ async fn run_download(options: &SharedOptions, args: DownloadArgs) -> Result<()>
             .resolve(&reference)
             .await
             .with_context(|| format!("failed to resolve `{input}`"))?;
+        let parent_album = match &entity {
+            CatalogEntity::Album(album) => Some(album.clone()),
+            _ => None,
+        };
         let children = expand_download_entities(&provider, &reference, entity).await?;
         let mut handles = Vec::new();
         for entity in children {
@@ -516,12 +521,21 @@ async fn run_download(options: &SharedOptions, args: DownloadArgs) -> Result<()>
             let options = effective.clone();
             let semaphore = Arc::clone(&semaphore);
             let cover_cache = Arc::clone(&cover_cache);
+            let parent_album = parent_album.clone();
             handles.push(tokio::spawn(async move {
                 let _permit = semaphore
                     .acquire_owned()
                     .await
                     .context("download semaphore was closed")?;
-                download_entity(&provider, &http, &options, &cover_cache, &entity).await
+                download_entity(
+                    &provider,
+                    &http,
+                    &options,
+                    &cover_cache,
+                    parent_album.as_ref(),
+                    &entity,
+                )
+                .await
             }));
         }
         for handle in handles {
@@ -573,11 +587,14 @@ async fn download_entity(
     http: &HttpClient,
     options: &EffectiveDownloadOptions,
     cover_cache: &CoverCache,
+    parent_album: Option<&Album>,
     entity: &CatalogEntity,
 ) -> Result<Option<M3uEntry>> {
     let Some(item) = download_item_for_entity(entity, options) else {
         return Ok(None);
     };
+    let album_context = album_context_for_item(provider, parent_album, &item).await?;
+    let context = context_for_download_item(options, &item, album_context.as_ref())?;
     let stream = provider
         .streams(item.reference, item.quality.clone())
         .await
@@ -585,7 +602,7 @@ async fn download_entity(
         .into_iter()
         .next()
         .context("provider returned no stream variants")?;
-    let plan = render_download_plan(options, &item.context, &stream)?;
+    let plan = render_download_plan(options, &context, &stream)?;
     let final_path = plan.final_path();
     if options.skip_existing && final_path.exists() {
         println!("skip existing: {}", final_path.display());
@@ -597,18 +614,21 @@ async fn download_entity(
         )));
     }
 
-    let processed = execute_media_download(http, &plan, &final_path).await?;
+    let prepared = execute_media_download(http, &plan, &final_path).await?;
     let cover_data = write_metadata_if_enabled(
         provider,
         http,
-        options,
+        options.metadata,
         cover_cache,
-        &item,
-        &processed,
-        plan.final_extension,
+        MetadataWriteInput {
+            item: &item,
+            album_context: album_context.as_ref(),
+            processed: &prepared.processed,
+            final_extension: plan.final_extension,
+        },
     )
     .await?;
-    persist_processed_file(&processed, &final_path).await?;
+    persist_processed_file(&prepared.processed, &final_path).await?;
     write_lyrics_sidecar_if_available(provider, options, &item, &final_path).await?;
     write_cover_sidecar_if_available(options, cover_data.as_deref(), &final_path).await?;
 
@@ -624,11 +644,9 @@ async fn download_entity(
 struct DownloadItem<'a> {
     reference: &'a MediaRef,
     quality: QualityRequest,
-    context: TemplateContext,
     duration: Option<MediaDuration>,
     metadata: MediaMetadataInput<'a>,
     title: String,
-    cover: Option<CoverArtId>,
 }
 
 fn download_item_for_entity<'a>(
@@ -639,23 +657,94 @@ fn download_item_for_entity<'a>(
         CatalogEntity::Track(track) => Some(DownloadItem {
             reference: &track.id,
             quality: QualityRequest::Audio(options.audio_quality),
-            context: context_for_entity(entity),
             duration: track.duration,
             metadata: MediaMetadataInput::Track(track),
             title: track.title.clone(),
-            cover: track.album.as_ref().and_then(|album| album.cover.clone()),
         }),
         CatalogEntity::Video(video) => Some(DownloadItem {
             reference: &video.id,
             quality: QualityRequest::Video(options.video_quality),
-            context: context_for_entity(entity),
             duration: video.duration,
             metadata: MediaMetadataInput::Video(video),
             title: video.title.clone(),
-            cover: video.album.as_ref().and_then(|album| album.cover.clone()),
         }),
         _ => None,
     }
+}
+
+async fn album_context_for_item(
+    provider: &TidalProvider,
+    parent_album: Option<&Album>,
+    item: &DownloadItem<'_>,
+) -> Result<Option<Album>> {
+    if let Some(album) = parent_album {
+        return Ok(Some(album.clone()));
+    }
+
+    let album_ref = match item.metadata {
+        MediaMetadataInput::Track(track) => track.album.as_ref().map(|album| &album.id),
+        MediaMetadataInput::Video(video) => video.album.as_ref().map(|album| &album.id),
+    };
+    let Some(album_ref) = album_ref else {
+        return Ok(None);
+    };
+
+    match provider
+        .resolve(album_ref)
+        .await
+        .with_context(|| format!("failed to resolve album context `{album_ref:?}`"))?
+    {
+        CatalogEntity::Album(album) => Ok(Some(album)),
+        other => anyhow::bail!(
+            "album context reference `{album_ref:?}` resolved to {}",
+            entity_kind(&other)
+        ),
+    }
+}
+
+fn context_for_download_item(
+    options: &EffectiveDownloadOptions,
+    item: &DownloadItem<'_>,
+    album: Option<&Album>,
+) -> Result<TemplateContext> {
+    let now = time::OffsetDateTime::now_utc();
+    let mut context = match item.metadata {
+        MediaMetadataInput::Track(track) => TemplateContext::new(now).with_track(track),
+        MediaMetadataInput::Video(video) => TemplateContext::new(now).with_video(video),
+    };
+    if let Some(album) = album {
+        context = context.with_album(album);
+    }
+    context = context.with_effective_quality_label(effective_quality_label(options.audio_quality)?);
+    Ok(context)
+}
+
+fn effective_quality_label(
+    audio_quality: AudioQualityRequest,
+) -> Result<Option<ProviderQualityLabel>> {
+    match audio_quality {
+        AudioQualityRequest::HiResLossless | AudioQualityRequest::Best => {
+            ProviderQualityLabel::new("MAX")
+                .map(Some)
+                .context("failed to build effective quality label")
+        }
+        AudioQualityRequest::Low | AudioQualityRequest::High | AudioQualityRequest::Lossless => {
+            Ok(None)
+        }
+    }
+}
+
+fn cover_for_item(item: &DownloadItem<'_>, album: Option<&Album>) -> Option<CoverArtId> {
+    album
+        .and_then(|album| album.cover.clone())
+        .or_else(|| match item.metadata {
+            MediaMetadataInput::Track(track) => {
+                track.album.as_ref().and_then(|album| album.cover.clone())
+            }
+            MediaMetadataInput::Video(video) => {
+                video.album.as_ref().and_then(|album| album.cover.clone())
+            }
+        })
 }
 
 fn render_download_plan(
@@ -676,11 +765,16 @@ fn render_download_plan(
     Ok(plan_download(stream, output_stem))
 }
 
+struct PreparedDownload {
+    processed: PathBuf,
+    _temp_dir: tempfile::TempDir,
+}
+
 async fn execute_media_download(
     http: &HttpClient,
     plan: &riptide_media::DownloadPlan,
     final_path: &Path,
-) -> Result<PathBuf> {
+) -> Result<PreparedDownload> {
     let final_parent = final_path.parent().unwrap_or_else(|| Path::new("."));
     fs::create_dir_all(final_parent)
         .with_context(|| format!("failed to create {}", final_parent.display()))?;
@@ -706,38 +800,41 @@ async fn execute_media_download(
     let processed = post_process(download_path, &plan.post_process)
         .await
         .context("failed to post-process media")?;
-    Ok(processed)
+    Ok(PreparedDownload {
+        processed,
+        _temp_dir: temp_dir,
+    })
 }
 
 async fn write_metadata_if_enabled(
     provider: &TidalProvider,
     http: &HttpClient,
-    options: &EffectiveDownloadOptions,
+    metadata_config: MetadataConfig,
     cover_cache: &CoverCache,
-    item: &DownloadItem<'_>,
-    processed: &Path,
-    final_extension: riptide_core::ContainerExtension,
+    input: MetadataWriteInput<'_>,
 ) -> Result<Option<Arc<[u8]>>> {
-    let cover_data = if options.metadata.enable && options.metadata.cover {
-        fetch_cover_data(http, cover_cache, item.cover.as_ref()).await?
+    let cover = cover_for_item(input.item, input.album_context);
+    let cover_data = if metadata_config.enable && metadata_config.cover {
+        fetch_cover_data(http, cover_cache, cover.as_ref()).await?
     } else {
         None
     };
-    if options.metadata.enable {
-        let mut metadata = match item.metadata {
-            MediaMetadataInput::Track(track) => metadata_from_track(track, None),
+    if metadata_config.enable {
+        let mut metadata = match input.item.metadata {
+            MediaMetadataInput::Track(track) => metadata_from_track(track, input.album_context),
             MediaMetadataInput::Video(video) => metadata_from_video(video),
         };
         metadata.cover_data.clone_from(&cover_data);
-        if options.metadata.lyrics && matches!(item.metadata, MediaMetadataInput::Track(_)) {
+        if metadata_config.lyrics && matches!(input.item.metadata, MediaMetadataInput::Track(_)) {
             metadata.lyrics = provider
-                .lyrics(item.reference)
+                .lyrics(input.item.reference)
                 .await
                 .ok()
                 .flatten()
                 .and_then(|lyrics| lyrics.synchronized_lrc.or(lyrics.text));
         }
-        let tag_path = processed.to_path_buf();
+        let tag_path = input.processed.to_path_buf();
+        let final_extension = input.final_extension;
         tokio::task::spawn_blocking(move || write_tags(&tag_path, final_extension, &metadata))
             .await
             .context("failed to join metadata writer")?
@@ -836,6 +933,13 @@ async fn write_cover_sidecar_if_available(
 enum MediaMetadataInput<'a> {
     Track(&'a Track),
     Video(&'a Video),
+}
+
+struct MetadataWriteInput<'a> {
+    item: &'a DownloadItem<'a>,
+    album_context: Option<&'a Album>,
+    processed: &'a Path,
+    final_extension: riptide_core::ContainerExtension,
 }
 
 type CoverCache = Arc<tokio::sync::Mutex<HashMap<CoverArtId, Arc<[u8]>>>>;
@@ -1027,6 +1131,17 @@ fn entity_row(entity: &CatalogEntity) -> String {
     }
 }
 
+const fn entity_kind(entity: &CatalogEntity) -> &'static str {
+    match entity {
+        CatalogEntity::Track(_) => "track",
+        CatalogEntity::Video(_) => "video",
+        CatalogEntity::Album(_) => "album",
+        CatalogEntity::Playlist(_) => "playlist",
+        CatalogEntity::Artist(_) => "artist",
+        CatalogEntity::Collection(_) => "collection",
+    }
+}
+
 fn http_client() -> Result<HttpClient> {
     riptide_provider_tidal::http_client().context("failed to build HTTP client")
 }
@@ -1076,4 +1191,107 @@ fn cache_file(options: &SharedOptions) -> Result<PathBuf> {
 
 fn project_dirs() -> Option<ProjectDirs> {
     ProjectDirs::from("dev", "riptide", "riptide-rs")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use riptide_core::{
+        AlbumSummary, Artist, ArtistCredit, ArtistRole, ExternalIds, ProviderId, ResourceId,
+        ResourceKind,
+    };
+
+    #[test]
+    fn download_context_uses_resolved_album_for_date_template() -> Result<()> {
+        let entity = CatalogEntity::Track(sample_track()?);
+        let album = sample_album()?;
+        let options = test_download_options("{album.date:%Y} - {item.title}")?;
+        let item = download_item_for_entity(&entity, &options).context("expected download item")?;
+
+        let context = context_for_download_item(&options, &item, Some(&album))?;
+        let rendered = options.template.render_with_options(
+            &context,
+            TemplateRenderOptions {
+                with_asterisk_ext: false,
+            },
+        )?;
+
+        assert_eq!(rendered.as_str(), "2023 - Track Title");
+        Ok(())
+    }
+
+    fn test_download_options(template: &str) -> Result<EffectiveDownloadOptions> {
+        Ok(EffectiveDownloadOptions {
+            root: PathBuf::from("/tmp/riptide-test"),
+            audio_quality: AudioQualityRequest::Lossless,
+            video_quality: riptide_core::VideoQualityRequest::High,
+            skip_existing: true,
+            concurrency: 1,
+            template: CompiledTemplate::parse(template)?,
+            metadata: MetadataConfig {
+                enable: true,
+                lyrics: false,
+                cover: false,
+            },
+            m3u: M3uConfig { save: false },
+            videos_mode: VideosMode::Include,
+        })
+    }
+
+    fn sample_track() -> Result<Track> {
+        Ok(Track {
+            id: media_ref(ResourceKind::Track, "track-1")?,
+            title: "Track Title".to_owned(),
+            artists: vec![artist_credit("Artist")?],
+            album: Some(AlbumSummary {
+                id: media_ref(ResourceKind::Album, "album-1")?,
+                title: "Album Title".to_owned(),
+                artists: vec![artist_credit("Artist")?],
+                cover: None,
+            }),
+            duration: None,
+            track_number: None,
+            disc_number: None,
+            explicit: None,
+            external_ids: ExternalIds::default(),
+            version: None,
+            copyright: None,
+            bpm: None,
+            quality_label: None,
+            dolby_atmos: false,
+        })
+    }
+
+    fn sample_album() -> Result<Album> {
+        Ok(Album {
+            id: media_ref(ResourceKind::Album, "album-1")?,
+            title: "Album Title".to_owned(),
+            artists: vec![artist_credit("Artist")?],
+            release_date: Some(time::Date::from_calendar_date(2023, time::Month::April, 1)?),
+            track_count: None,
+            video_count: None,
+            explicit: None,
+            release_type: None,
+            hires_lossless: false,
+            cover: None,
+        })
+    }
+
+    fn artist_credit(name: &str) -> Result<ArtistCredit> {
+        Ok(ArtistCredit {
+            artist: Artist {
+                id: Some(media_ref(ResourceKind::Artist, "artist-1")?),
+                name: name.to_owned(),
+            },
+            role: ArtistRole::Main,
+        })
+    }
+
+    fn media_ref(kind: ResourceKind, id: &str) -> Result<MediaRef> {
+        Ok(MediaRef::new(
+            ProviderId::new("tidal")?,
+            kind,
+            ResourceId::new(id)?,
+        ))
+    }
 }
