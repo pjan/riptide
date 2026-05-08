@@ -26,7 +26,7 @@ use riptide_template::{
     context_from_fixture_str, CompiledTemplate, TemplateContext, TemplateRenderOptions,
 };
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     fs,
     path::{Path, PathBuf},
     sync::Arc,
@@ -491,7 +491,7 @@ async fn run_download(options: &SharedOptions, args: DownloadArgs) -> Result<()>
     let provider = TidalProvider::new(tidal_client(options).await?);
     let http = http_client()?;
     let semaphore = Arc::new(tokio::sync::Semaphore::new(effective.concurrency));
-    let cover_cache = Arc::new(tokio::sync::Mutex::new(HashMap::new()));
+    let cover_cache = Arc::new(tokio::sync::Mutex::new(CoverCacheState::default()));
     let mut m3u_entries = Vec::new();
 
     for input in &args.urls {
@@ -630,7 +630,8 @@ async fn download_entity(
     .await?;
     persist_processed_file(&prepared.processed, &final_path).await?;
     write_lyrics_sidecar_if_available(provider, options, &item, &final_path).await?;
-    write_cover_sidecar_if_available(options, cover_data.as_deref(), &final_path).await?;
+    write_cover_sidecar_if_available(options, cover_cache, cover_data.as_deref(), &final_path)
+        .await?;
 
     println!("downloaded: {}", final_path.display());
     Ok(Some(m3u_entry(
@@ -853,7 +854,7 @@ async fn fetch_cover_data(
     };
     let cached = {
         let cache = cover_cache.lock().await;
-        cache.get(cover).cloned()
+        cache.bytes.get(cover).cloned()
     };
     if let Some(data) = cached {
         return Ok(Some(data));
@@ -874,6 +875,7 @@ async fn fetch_cover_data(
     cover_cache
         .lock()
         .await
+        .bytes
         .insert(cover.clone(), Arc::clone(&data));
     Ok(Some(data))
 }
@@ -914,20 +916,42 @@ async fn write_lyrics_sidecar_if_available(
 
 async fn write_cover_sidecar_if_available(
     options: &EffectiveDownloadOptions,
+    cover_cache: &CoverCache,
     cover_data: Option<&[u8]>,
     final_path: &Path,
 ) -> Result<()> {
     if options.metadata.enable && options.metadata.cover {
         if let Some(cover_data) = cover_data {
-            let cover_path = final_path.with_extension("jpg");
+            let cover_path = cover_sidecar_path(final_path);
+            if !claim_cover_sidecar(cover_cache, &cover_path).await {
+                return Ok(());
+            }
             let data = cover_data.to_vec();
-            tokio::task::spawn_blocking(move || save_cover(&data, &cover_path))
-                .await
-                .context("failed to join cover writer")?
-                .context("failed to write cover sidecar")?;
+            let write_result = tokio::task::spawn_blocking({
+                let cover_path = cover_path.clone();
+                move || save_cover(&data, &cover_path)
+            })
+            .await
+            .context("failed to join cover writer")?
+            .context("failed to write cover sidecar");
+            if write_result.is_err() {
+                cover_cache
+                    .lock()
+                    .await
+                    .written_sidecars
+                    .remove(&cover_path);
+            }
+            write_result?;
         }
     }
     Ok(())
+}
+
+fn cover_sidecar_path(final_path: &Path) -> PathBuf {
+    final_path
+        .parent()
+        .unwrap_or_else(|| Path::new("."))
+        .join("cover.jpg")
 }
 
 enum MediaMetadataInput<'a> {
@@ -942,7 +966,21 @@ struct MetadataWriteInput<'a> {
     final_extension: riptide_core::ContainerExtension,
 }
 
-type CoverCache = Arc<tokio::sync::Mutex<HashMap<CoverArtId, Arc<[u8]>>>>;
+#[derive(Default)]
+struct CoverCacheState {
+    bytes: HashMap<CoverArtId, Arc<[u8]>>,
+    written_sidecars: HashSet<PathBuf>,
+}
+
+type CoverCache = Arc<tokio::sync::Mutex<CoverCacheState>>;
+
+async fn claim_cover_sidecar(cover_cache: &CoverCache, cover_path: &Path) -> bool {
+    if cover_path.exists() {
+        return false;
+    }
+    let mut cache = cover_cache.lock().await;
+    cache.written_sidecars.insert(cover_path.to_path_buf())
+}
 
 fn m3u_entry(
     root: &Path,
@@ -1218,6 +1256,24 @@ mod tests {
 
         assert_eq!(rendered.as_str(), "2023 - Track Title");
         Ok(())
+    }
+
+    #[test]
+    fn cover_sidecar_uses_album_directory_cover_name() {
+        let final_path = Path::new("/music/Artist/2023 - Album/01 Track.flac");
+        assert_eq!(
+            cover_sidecar_path(final_path),
+            PathBuf::from("/music/Artist/2023 - Album/cover.jpg")
+        );
+    }
+
+    #[tokio::test]
+    async fn cover_sidecar_claims_path_once() {
+        let cache = Arc::new(tokio::sync::Mutex::new(CoverCacheState::default()));
+        let path = Path::new("/music/Artist/Album/cover.jpg");
+
+        assert!(claim_cover_sidecar(&cache, path).await);
+        assert!(!claim_cover_sidecar(&cache, path).await);
     }
 
     fn test_download_options(template: &str) -> Result<EffectiveDownloadOptions> {
