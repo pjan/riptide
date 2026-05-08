@@ -529,6 +529,14 @@ fn parse_url(base_url: &Url, value: &str) -> TidalResult<Url> {
     match Url::parse(value) {
         Ok(url) => Ok(url),
         Err(url::ParseError::RelativeUrlWithoutBase) => {
+            if value.contains('.') && !value.starts_with('/') {
+                return Url::parse(&format!("https://{value}")).map_err(|error| {
+                    TidalError::InvalidValue {
+                        field: "url",
+                        message: error.to_string(),
+                    }
+                });
+            }
             base_url
                 .join(value)
                 .map_err(|error| TidalError::InvalidValue {
@@ -582,6 +590,19 @@ mod tests {
             message: error.to_string(),
         })?;
         assert_eq!(parsed.as_str(), "https://auth.tidal.com/v1/oauth2/device");
+        Ok(())
+    }
+
+    #[test]
+    fn verification_url_accepts_scheme_less_hosts() -> TidalResult<()> {
+        let base = Url::parse("https://auth.tidal.com/v1/oauth2/").map_err(|error| {
+            TidalError::InvalidValue {
+                field: "url",
+                message: error.to_string(),
+            }
+        })?;
+        let parsed = parse_url(&base, "link.tidal.com/XKLLI")?;
+        assert_eq!(parsed.as_str(), "https://link.tidal.com/XKLLI");
         Ok(())
     }
 }
