@@ -17,10 +17,12 @@
           rustToolchain
           pkgs.cargo-nextest
           pkgs.clippy
-          pkgs.ffmpeg
           pkgs.protobuf
           pkgs.rustfmt
           pkgs.cacert
+        ];
+        runtimeInputs = [
+          pkgs.ffmpeg
         ];
         certEnv = {
           SSL_CERT_FILE = "${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt";
@@ -42,17 +44,40 @@
             touch "$out/done"
           '';
         } // certEnv);
-      in
-      {
-        packages.default = pkgs.rustPlatform.buildRustPackage ({
+        riptide-rs = pkgs.rustPlatform.buildRustPackage ({
           pname = "riptide-rs";
           version = "0.1.0";
           src = ./.;
           cargoLock.lockFile = ./Cargo.lock;
-          nativeBuildInputs = commonNativeBuildInputs;
+          nativeBuildInputs = commonNativeBuildInputs ++ [
+            pkgs.makeWrapper
+          ];
           cargoBuildFlags = [ "--workspace" ];
           cargoTestFlags = [ "--workspace" ];
+          postInstall = ''
+            wrapProgram "$out/bin/riptide-rs" \
+              --prefix PATH : "${pkgs.lib.makeBinPath runtimeInputs}" \
+              --set-default SSL_CERT_FILE "${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt" \
+              --set-default CURL_CA_BUNDLE "${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt"
+          '';
         } // certEnv);
+      in
+      {
+        packages = {
+          default = riptide-rs;
+          riptide-rs = riptide-rs;
+        };
+
+        apps = {
+          default = {
+            type = "app";
+            program = "${riptide-rs}/bin/riptide-rs";
+          };
+          riptide-rs = {
+            type = "app";
+            program = "${riptide-rs}/bin/riptide-rs";
+          };
+        };
 
         checks = {
           inherit (self.packages.${system}) default;
@@ -81,6 +106,7 @@
           nativeBuildInputs = commonNativeBuildInputs ++ [
             pkgs.cargo-audit
             pkgs.cargo-deny
+            pkgs.ffmpeg
           ];
           shellHook = ''
             cert_file="${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt"
