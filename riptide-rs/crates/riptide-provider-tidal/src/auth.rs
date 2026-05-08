@@ -385,8 +385,11 @@ impl TidalAuthClient {
         Ok(DeviceAuthorization {
             device_code: DeviceCode::new(response.device_code)?,
             user_code: UserCode::new(response.user_code)?,
-            verification_uri: parse_url(&response.verification_uri)?,
-            verification_uri_complete: parse_url(&response.verification_uri_complete)?,
+            verification_uri: parse_url(&self.base_url, &response.verification_uri)?,
+            verification_uri_complete: parse_url(
+                &self.base_url,
+                &response.verification_uri_complete,
+            )?,
             expires_at: time::OffsetDateTime::now_utc()
                 + time::Duration::seconds(i64::try_from(response.expires_in).unwrap_or(0)),
             interval: PollingInterval::new(Duration::from_secs(response.interval))?,
@@ -522,11 +525,22 @@ async fn api_error(
     }
 }
 
-fn parse_url(value: &str) -> TidalResult<Url> {
-    Url::parse(value).map_err(|error| TidalError::InvalidValue {
-        field: "url",
-        message: error.to_string(),
-    })
+fn parse_url(base_url: &Url, value: &str) -> TidalResult<Url> {
+    match Url::parse(value) {
+        Ok(url) => Ok(url),
+        Err(url::ParseError::RelativeUrlWithoutBase) => {
+            base_url
+                .join(value)
+                .map_err(|error| TidalError::InvalidValue {
+                    field: "url",
+                    message: error.to_string(),
+                })
+        }
+        Err(error) => Err(TidalError::InvalidValue {
+            field: "url",
+            message: error.to_string(),
+        }),
+    }
 }
 
 #[cfg(test)]
@@ -552,6 +566,22 @@ mod tests {
     fn slow_down_adds_five_seconds() -> TidalResult<()> {
         let interval = PollingInterval::new(Duration::from_secs(1))?.slow_down();
         assert_eq!(interval.as_duration(), Duration::from_secs(6));
+        Ok(())
+    }
+
+    #[test]
+    fn verification_url_accepts_relative_response_values() -> TidalResult<()> {
+        let base = Url::parse("https://auth.tidal.com/v1/oauth2/").map_err(|error| {
+            TidalError::InvalidValue {
+                field: "url",
+                message: error.to_string(),
+            }
+        })?;
+        let parsed = parse_url(&base, "device").map_err(|error| TidalError::InvalidValue {
+            field: "url",
+            message: error.to_string(),
+        })?;
+        assert_eq!(parsed.as_str(), "https://auth.tidal.com/v1/oauth2/device");
         Ok(())
     }
 }
