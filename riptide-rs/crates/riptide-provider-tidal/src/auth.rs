@@ -171,33 +171,26 @@ impl TidalCredentials {
         Self::from_sources(
             env::var("RIPTIDE_TIDAL_CLIENT_ID").ok(),
             env::var("RIPTIDE_TIDAL_CLIENT_SECRET").ok(),
-            env::var("RIPTIDE_TIDAL_CREDENTIALS").ok(),
-            env::var("riptide_AUTH").ok(),
         )
     }
 
-    fn from_sources(
-        client_id: Option<String>,
-        client_secret: Option<String>,
-        combined: Option<String>,
-        legacy_combined: Option<String>,
-    ) -> TidalResult<Self> {
-        if let (Some(client_id), Some(client_secret)) = (client_id, client_secret) {
-            return Ok(Self {
+    fn from_sources(client_id: Option<String>, client_secret: Option<String>) -> TidalResult<Self> {
+        match (client_id, client_secret) {
+            (Some(client_id), Some(client_secret)) => Ok(Self {
                 client_id: TidalClientId::new(client_id)?,
                 client_secret: TidalClientSecret::new(client_secret)?,
-            });
+            }),
+            (None, None) => Self::from_default_fallback(),
+            _ => Err(TidalError::InvalidValue {
+                field: "TIDAL credentials",
+                message:
+                    "set both RIPTIDE_TIDAL_CLIENT_ID and RIPTIDE_TIDAL_CLIENT_SECRET, or neither"
+                        .to_owned(),
+            }),
         }
-        if let Some(combined) = combined {
-            return Self::from_combined("RIPTIDE_TIDAL_CREDENTIALS", &combined);
-        }
-        if let Some(combined) = legacy_combined {
-            return Self::from_combined("riptide_AUTH", &combined);
-        }
-        Self::from_default_fallback()
     }
 
-    fn from_combined(field: &'static str, value: &str) -> TidalResult<Self> {
+    fn from_semicolon_pair(field: &'static str, value: &str) -> TidalResult<Self> {
         let Some((client_id, client_secret)) = value.split_once(';') else {
             return Err(TidalError::InvalidValue {
                 field,
@@ -222,7 +215,7 @@ impl TidalCredentials {
             field: "default_credentials",
             message: error.to_string(),
         })?;
-        Self::from_combined("default_credentials", &decoded)
+        Self::from_semicolon_pair("default_credentials", &decoded)
     }
 }
 
@@ -614,12 +607,10 @@ mod tests {
     }
 
     #[test]
-    fn credentials_use_new_env_pair_first() -> TidalResult<()> {
+    fn credentials_use_env_pair_when_present() -> TidalResult<()> {
         let credentials = TidalCredentials::from_sources(
             Some("new-id".to_owned()),
             Some("new-secret".to_owned()),
-            Some("combined-id;combined-secret".to_owned()),
-            Some("legacy-id;legacy-secret".to_owned()),
         )?;
         assert_eq!(credentials.client_id.as_str(), "new-id");
         assert_eq!(credentials.client_secret.expose_secret(), "new-secret");
@@ -627,21 +618,16 @@ mod tests {
     }
 
     #[test]
-    fn credentials_accept_legacy_combined_env_name() -> TidalResult<()> {
-        let credentials = TidalCredentials::from_sources(
-            None,
-            None,
-            None,
-            Some("legacy-id;legacy-secret".to_owned()),
-        )?;
-        assert_eq!(credentials.client_id.as_str(), "legacy-id");
-        assert_eq!(credentials.client_secret.expose_secret(), "legacy-secret");
-        Ok(())
+    fn credentials_reject_partial_env_pair() {
+        let error = TidalCredentials::from_sources(Some("new-id".to_owned()), None);
+        assert!(
+            matches!(error, Err(TidalError::InvalidValue { field, .. }) if field == "TIDAL credentials")
+        );
     }
 
     #[test]
-    fn credentials_fall_back_to_python_default() -> TidalResult<()> {
-        let credentials = TidalCredentials::from_sources(None, None, None, None)?;
+    fn credentials_fall_back_to_embedded_default() -> TidalResult<()> {
+        let credentials = TidalCredentials::from_sources(None, None)?;
         assert_eq!(credentials.client_id.as_str(), "fX2JxdmntZWK0ixT");
         assert!(!credentials.client_secret.expose_secret().is_empty());
         Ok(())

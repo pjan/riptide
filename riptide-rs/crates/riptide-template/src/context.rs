@@ -151,7 +151,7 @@ pub struct ItemTemplateInput {
     /// Copyright text.
     #[serde(default)]
     pub copyright: String,
-    /// BPM, defaulting to Python-compatible `0`.
+    /// BPM, defaulting to `0` when the provider omits it.
     #[serde(default)]
     pub bpm: i64,
     /// ISRC.

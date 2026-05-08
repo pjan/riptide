@@ -25,7 +25,7 @@ impl ValidatedConfig {
                 message: error.to_string(),
             })?;
 
-        inspect_legacy_and_unknown_keys(&value)?;
+        inspect_unknown_keys(&value)?;
 
         let raw = RawConfig::deserialize(value).map_err(|error| ConfigError::Decode {
             message: error.to_string(),
@@ -61,39 +61,12 @@ impl TryFrom<crate::raw::RawDownloadConfig> for DownloadConfig {
     type Error = ConfigError;
 
     fn try_from(raw: crate::raw::RawDownloadConfig) -> Result<Self, Self::Error> {
-        if raw.track_quality == "normal" {
-            return Err(ConfigError::Migration {
-                path: "download.track_quality".to_owned(),
-                message: "use \"high\" instead of \"normal\"".to_owned(),
-            });
-        }
-
-        if raw.track_quality == "max" {
-            return Err(ConfigError::Migration {
-                path: "download.track_quality".to_owned(),
-                message: "use \"hi_res_lossless\" instead of \"max\"".to_owned(),
-            });
-        }
-
         let track_quality = AudioQualityRequest::from_str(&raw.track_quality).map_err(|error| {
             ConfigError::InvalidValue {
                 path: "download.track_quality".to_owned(),
                 message: error.to_string(),
             }
         })?;
-
-        let video_migration = match raw.video_quality.as_str() {
-            "sd" => Some("low"),
-            "hd" => Some("medium"),
-            "fhd" => Some("high"),
-            _ => None,
-        };
-        if let Some(replacement) = video_migration {
-            return Err(ConfigError::Migration {
-                path: "download.video_quality".to_owned(),
-                message: format!("use \"{replacement}\" instead of \"{}\"", raw.video_quality),
-            });
-        }
 
         let video_quality = VideoQualityRequest::from_str(&raw.video_quality).map_err(|error| {
             ConfigError::InvalidValue {
@@ -190,7 +163,7 @@ impl fmt::Debug for ListenerSecret {
     }
 }
 
-fn inspect_legacy_and_unknown_keys(value: &toml::Value) -> ConfigResult<()> {
+fn inspect_unknown_keys(value: &toml::Value) -> ConfigResult<()> {
     let Some(root) = value.as_table() else {
         return Err(ConfigError::InvalidValue {
             path: "<root>".to_owned(),
@@ -201,21 +174,6 @@ fn inspect_legacy_and_unknown_keys(value: &toml::Value) -> ConfigResult<()> {
     for key in root.keys() {
         match key.as_str() {
             "download" | "listener" => {}
-            "enable_cache" => {
-                return Err(ConfigError::Migration {
-                    path: "enable_cache".to_owned(),
-                    message:
-                        "not implemented in this slice; add this when HTTP cache behavior is wired"
-                            .to_owned(),
-                });
-            }
-            "debug" => {
-                return Err(ConfigError::Migration {
-                    path: "debug".to_owned(),
-                    message: "not implemented in this slice; add this when debug response capture is wired"
-                        .to_owned(),
-                });
-            }
             other => {
                 return Err(ConfigError::UnknownKey {
                     path: other.to_owned(),
@@ -253,14 +211,6 @@ fn inspect_table(
     for key in table.keys() {
         if allowed.contains(&key.as_str()) {
             continue;
-        }
-
-        if section == "download" && key == "threads_count" {
-            return Err(ConfigError::Migration {
-                path: "download.threads_count".to_owned(),
-                message: "concurrency is not implemented yet; remove threads_count until the download slice wires it"
-                    .to_owned(),
-            });
         }
 
         return Err(ConfigError::UnknownKey {
@@ -342,28 +292,13 @@ mod tests {
     }
 
     #[test]
-    fn video_quality_fhd_gets_migration_error() {
-        let error = ValidatedConfig::from_toml_str(
-            r#"
-            [download]
-            video_quality = "fhd"
-            "#,
-        );
-        assert!(matches!(
-            error,
-            Err(ConfigError::Migration { ref path, ref message })
-                if path == "download.video_quality" && message.contains("use \"high\"")
-        ));
-    }
-
-    #[test]
-    fn python_quality_values_get_migration_errors() {
-        for (key, value, replacement) in [
-            ("track_quality", "normal", "high"),
-            ("track_quality", "max", "hi_res_lossless"),
-            ("video_quality", "sd", "low"),
-            ("video_quality", "hd", "medium"),
-            ("video_quality", "fhd", "high"),
+    fn unsupported_quality_values_are_invalid_values() {
+        for (key, value, path) in [
+            ("track_quality", "normal", "download.track_quality"),
+            ("track_quality", "max", "download.track_quality"),
+            ("video_quality", "sd", "download.video_quality"),
+            ("video_quality", "hd", "download.video_quality"),
+            ("video_quality", "fhd", "download.video_quality"),
         ] {
             let error = ValidatedConfig::from_toml_str(&format!(
                 r#"
@@ -373,8 +308,7 @@ mod tests {
             ));
             assert!(matches!(
                 error,
-                Err(ConfigError::Migration { ref message, .. })
-                    if message.contains(&format!("use \"{replacement}\""))
+                Err(ConfigError::InvalidValue { path: ref error_path, .. }) if error_path == path
             ));
         }
     }
@@ -406,7 +340,7 @@ mod tests {
     }
 
     #[test]
-    fn known_old_key_fails_with_migration_message() {
+    fn unsupported_download_key_is_unknown() {
         let error = ValidatedConfig::from_toml_str(
             r#"
             [download]
@@ -415,17 +349,16 @@ mod tests {
         );
         assert!(matches!(
             error,
-            Err(ConfigError::Migration { ref path, ref message })
-                if path == "download.threads_count" && message.contains("remove threads_count")
+            Err(ConfigError::UnknownKey { ref path }) if path == "download.threads_count"
         ));
     }
 
     #[test]
-    fn root_cache_key_is_deferred_migration_error() {
+    fn unsupported_root_key_is_unknown() {
         let error = ValidatedConfig::from_toml_str("enable_cache = true");
         assert!(matches!(
             error,
-            Err(ConfigError::Migration { ref path, .. }) if path == "enable_cache"
+            Err(ConfigError::UnknownKey { ref path }) if path == "enable_cache"
         ));
     }
 

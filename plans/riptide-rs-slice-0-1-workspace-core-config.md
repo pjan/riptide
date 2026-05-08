@@ -415,22 +415,9 @@ Use Rust quality names in config:
 - audio: `low`, `high`, `lossless`, `hi_res_lossless`, and `best`
 - video: `low`, `medium`, `high`, and `best`
 
-Python quality strings from `riptide/core/utils/const.py` should fail with
-actionable migration guidance:
-
-- `download.track_quality = "normal"` -> use `"high"` in Rust, matching
-  Python's `normal -> HIGH`
-- `download.track_quality = "high"` remains accepted in Rust but means the
-  Rust tier named `high`; Python users who intended Python `high -> LOSSLESS`
-  should migrate to `"lossless"` explicitly
-- `download.track_quality = "max"` -> use `"hi_res_lossless"` in Rust, matching
-  Python's `max -> HI_RES_LOSSLESS`
-- `download.video_quality = "sd"` -> use `"low"` in Rust
-- `download.video_quality = "hd"` -> use `"medium"` in Rust
-- `download.video_quality = "fhd"` -> use `"high"` in Rust
-
-Because Python and Rust both use the string `"high"` but with different
-semantics, generated migration docs should call out this semantic difference.
+Unsupported quality names should fail as invalid values with key-path context.
+Do not accept aliases from the Python implementation such as `normal`, `max`,
+`sd`, `hd`, or `fhd`; this is a new Rust config contract.
 
 #### Raw to Validated
 
@@ -445,20 +432,21 @@ Rules:
 
 - Raw config may contain strings and primitives.
 - Validated config must contain typed fields.
-- Unknown old keys should fail with migration errors when known.
+- Unknown keys should fail with key-path context.
 - Do not silently ignore unknown keys.
 - Config names must match semantics.
 - Use a two-pass unknown-key strategy:
   1. Deserialize TOML into `toml::Value`.
-  2. Inspect the value tree for known legacy keys that cannot exist on
+  2. Inspect the value tree for unsupported keys that cannot exist on
      `RawConfig`, such as root `enable_cache`, root `debug`, and
-     `[download].threads_count`.
+     `[download].threads_count`, and report them as unknown keys.
   3. Deserialize the same value into `RawConfig` using strict serde structs with
      unknown-field rejection for generic unknown-key errors.
-  4. Convert `RawConfig` into `ValidatedConfig` with `TryFrom`; value-level
-     migrations such as `[download].video_quality = "fhd"` are reported here.
-  This preserves actionable migration messages while still rejecting unknown
-  keys with path context.
+  4. Convert `RawConfig` into `ValidatedConfig` with `TryFrom`; unsupported
+     values such as `[download].video_quality = "fhd"` are reported as invalid
+     values.
+  This preserves path context while keeping the runtime contract free of
+  compatibility aliases.
 
 #### Initial Validated Config
 

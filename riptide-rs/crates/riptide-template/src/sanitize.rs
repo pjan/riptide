@@ -1,6 +1,6 @@
 //! Filesystem-safe path segment cleanup.
 
-/// Cleans a rendered path segment using Python-compatible rules.
+/// Cleans a rendered path segment using riptide-rs filesystem rules.
 pub fn clean_segment(input: &str) -> String {
     let mut without_forbidden = String::with_capacity(input.len());
     for ch in input.chars() {

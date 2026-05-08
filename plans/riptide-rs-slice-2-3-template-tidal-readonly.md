@@ -583,11 +583,10 @@ TidalCredentials
 Load order:
 
 1. `RIPTIDE_TIDAL_CLIENT_ID` and `RIPTIDE_TIDAL_CLIENT_SECRET`.
-2. `RIPTIDE_TIDAL_CREDENTIALS` as `client_id;client_secret`, for compatibility
-   with the Python `riptide_AUTH` shape.
-3. No hard-coded credentials in Rust source.
+2. Embedded riptide-rs app credentials, decoded from an internal base64 payload.
 
-If credentials are missing, auth commands fail with an actionable message.
+If exactly one explicit credential variable is set, auth commands fail with an
+actionable message. Do not support combined credential environment variables.
 
 Check whether the selected TIDAL credentials require PKCE before implementing
 device auth. If required, add typed `CodeVerifier`, `CodeChallenge`, and
@@ -715,7 +714,7 @@ Endpoint defaults:
 - favorites: revalidate
 - playlists and playlist items: revalidate
 - tracks, videos, albums, artists, album items, artist albums/videos, lyrics:
-  TTL cache with the Python-compatible default TTL of 3600 seconds
+  TTL cache with the riptide-rs default TTL of 3600 seconds
 
 Endpoint pagination defaults, matching `riptide/core/api/api.py`:
 
@@ -981,7 +980,7 @@ matching the POSIX SIGINT convention.
 - load token
 - refresh if expired or if the API returns one `401`
 - fetch catalog data
-- print rows rendered through the default Python-compatible list template unless
+- print rows rendered through the default riptide-rs list template unless
   `--template` is provided
 - optionally accept `--template <template>` only if template compilation is
   wired in that command path
@@ -1019,7 +1018,7 @@ printing an artist summary row by default:
 4. include videos only when the wired video filter requests them
 
 If the Rust CLI does not wire the singles/videos filters in this slice, document
-the defaults as Python-compatible `singles = none` and `videos = none`, and add
+the defaults as `singles = none` and `videos = none`, and add
 the filters in the same slice that wires their runtime behavior.
 
 `template render-fixture` reads a JSON template context fixture from the
@@ -1104,21 +1103,9 @@ environment variables; token and cache paths come from CLI flags or default
 runtime path resolution. If any config field is added during implementation, it
 must be parsed, validated, and consumed by runtime behavior in the same patch.
 
-This slice must amend the existing `riptide-config` quality migration coverage
-from Slice 0-1 so Python users get actionable errors for all known Python
-quality names:
-
-- `download.track_quality = "normal"` -> use `"high"` in Rust, matching current
-  Python `normal -> HIGH`
-- `download.track_quality = "max"` -> use `"hi_res_lossless"` in Rust, matching
-  Python `max -> HI_RES_LOSSLESS`
-- `download.video_quality = "sd"` -> use `"low"` in Rust
-- `download.video_quality = "hd"` -> use `"medium"` in Rust
-- `download.video_quality = "fhd"` -> use `"high"` in Rust
-
-Also document the semantic overlap that Python `track_quality = "high"` maps to
-TIDAL `LOSSLESS`, while Rust `track_quality = "high"` is the Rust high tier. A
-Python user who intended Python `high` should use Rust `"lossless"` explicitly.
+This slice must preserve the Slice 0-1 config contract: unsupported quality
+names such as `normal`, `max`, `sd`, `hd`, and `fhd` fail as invalid values with
+key-path context. Do not add compatibility aliases or migration shims.
 
 ## Test Plan
 
@@ -1149,7 +1136,7 @@ token-store behavior before wiring CLI side effects.
 - `{item.quality}` renders the raw/effective provider quality label, not Rust
   enum variant names.
 - `{item.artists}`, `{item.features}`, and `{item.artists_with_features}` use
-  Python-compatible alphabetical ordering.
+  stable alphabetical ordering.
 - `PlaylistIndex` rejects zero and renders user-facing one-based positions.
 - Path segment sanitization removes forbidden characters.
 - Repeated dots collapse.
@@ -1191,27 +1178,23 @@ Golden tests should compare rendered path strings, not internal AST structure.
 - `list --template <template>` compiles once before fetching/rendering rows.
 - invalid `list --template <template>` returns before token loading, refresh, or
   any API request
-- Legacy Python template fields that are unsupported fail with migration or
-  unsupported-field context.
+- Unsupported template fields fail with unsupported-field context.
 
-### Config Migration Tests
+### Config Validation Tests
 
-- `download.track_quality = "normal"` fails with guidance to use `"high"`.
-- `download.track_quality = "max"` fails with guidance to use
-  `"hi_res_lossless"`.
-- `download.video_quality = "sd"` fails with guidance to use `"low"`.
-- `download.video_quality = "hd"` fails with guidance to use `"medium"`.
-- `download.video_quality = "fhd"` fails with guidance to use `"high"`.
-- migration docs call out that Python `track_quality = "high"` maps to TIDAL
-  `LOSSLESS`, so Python users intending that behavior should use Rust
-  `"lossless"`.
+- `download.track_quality = "normal"` fails as an invalid value.
+- `download.track_quality = "max"` fails as an invalid value.
+- `download.video_quality = "sd"` fails as an invalid value.
+- `download.video_quality = "hd"` fails as an invalid value.
+- `download.video_quality = "fhd"` fails as an invalid value.
 
 ### Auth Unit Tests
 
 - Credentials load from `RIPTIDE_TIDAL_CLIENT_ID` and
   `RIPTIDE_TIDAL_CLIENT_SECRET`.
-- Credentials load from `RIPTIDE_TIDAL_CREDENTIALS`.
-- Missing credentials fail with actionable error.
+- Missing explicit credentials fall back to the embedded riptide-rs app
+  credentials.
+- A partial explicit credential pair fails with actionable error.
 - `CountryCode` accepts uppercase two-character ASCII codes and rejects empty,
   lowercase, non-ASCII, and wrong-length values.
 - Token wrappers redact `Debug`.
@@ -1252,7 +1235,7 @@ Cover:
 - Cache key construction is stable regardless of query param insertion order.
 - Cache key excludes access token.
 - Cache TTL expiry is honored.
-- TTL-cache endpoints use the Python-compatible 3600 second TTL.
+- TTL-cache endpoints use the riptide-rs 3600 second TTL.
 - Expired cache entries are treated as misses and removed on read when a write
   transaction is available.
 - Multi-endpoint command paths can batch cache writes into one write

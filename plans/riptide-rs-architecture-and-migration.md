@@ -864,7 +864,7 @@ Deliverables:
   entities, provider-neutral capability traits, provider registry shape, and
   errors.
 - `riptide-config` raw and validated config.
-- Migration errors for known legacy/unwanted keys.
+- Unknown/unwired config keys rejected with key-path context.
 
 Tests:
 
@@ -1026,6 +1026,7 @@ Before implementation starts, review this plan and each per-slice plan for:
 - Scanner cost: is expensive work derived from active config?
 - Config UX: do names describe emitted conditions and selected modes?
 - Wiring: is every exposed config key implemented in runtime behavior?
-- Migration: do breaking changes fail with actionable messages?
+- Config compatibility: are unsupported keys and values rejected clearly without
+  adding aliases?
 - Error context: do CLI errors preserve the failed operation?
 - Documentation: are public foundational items documented before stabilization?

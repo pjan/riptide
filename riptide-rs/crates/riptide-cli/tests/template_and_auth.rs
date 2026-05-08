@@ -3,7 +3,7 @@
 use std::{fs, process::Command};
 
 #[test]
-fn template_check_succeeds_for_python_style_template() -> Result<(), Box<dyn std::error::Error>> {
+fn template_check_succeeds_for_riptide_template() -> Result<(), Box<dyn std::error::Error>> {
     let output = Command::new(env!("CARGO_BIN_EXE_riptide-rs"))
         .args([
             "template",

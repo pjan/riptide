@@ -29,15 +29,6 @@ pub enum ConfigError {
         path: String,
     },
 
-    /// Known legacy key or value needs migration.
-    #[error("config `{path}` changed: {message}")]
-    Migration {
-        /// Key path.
-        path: String,
-        /// Migration guidance.
-        message: String,
-    },
-
     /// A value failed validation.
     #[error("invalid config value at `{path}`: {message}")]
     InvalidValue {

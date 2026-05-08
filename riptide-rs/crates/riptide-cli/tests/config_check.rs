@@ -51,6 +51,6 @@ fn config_check_fails_for_invalid_fixture_with_context() -> Result<(), Box<dyn s
     assert!(!output.status.success());
     let stderr = String::from_utf8(output.stderr)?;
     assert!(stderr.contains("failed to validate config"));
-    assert!(stderr.contains("use \"high\" instead of \"fhd\""));
+    assert!(stderr.contains("invalid config value at `download.video_quality`"));
     Ok(())
 }
