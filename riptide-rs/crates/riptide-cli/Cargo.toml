@@ -7,8 +7,14 @@ version.workspace = true
 [dependencies]
 anyhow.workspace = true
 clap.workspace = true
+directories.workspace = true
 riptide-config = { path = "../riptide-config" }
 riptide-core = { path = "../riptide-core" }
+riptide-provider-tidal = { path = "../riptide-provider-tidal" }
+riptide-template = { path = "../riptide-template" }
+tokio.workspace = true
+time.workspace = true
+url.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true

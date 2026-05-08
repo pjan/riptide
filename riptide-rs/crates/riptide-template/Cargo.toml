@@ -1,0 +1,18 @@
+[package]
+name = "riptide-template"
+edition.workspace = true
+license.workspace = true
+version.workspace = true
+
+[dependencies]
+riptide-core = { path = "../riptide-core" }
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+time.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[lints]
+workspace = true

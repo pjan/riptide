@@ -61,6 +61,20 @@ impl TryFrom<crate::raw::RawDownloadConfig> for DownloadConfig {
     type Error = ConfigError;
 
     fn try_from(raw: crate::raw::RawDownloadConfig) -> Result<Self, Self::Error> {
+        if raw.track_quality == "normal" {
+            return Err(ConfigError::Migration {
+                path: "download.track_quality".to_owned(),
+                message: "use \"high\" instead of \"normal\"".to_owned(),
+            });
+        }
+
+        if raw.track_quality == "max" {
+            return Err(ConfigError::Migration {
+                path: "download.track_quality".to_owned(),
+                message: "use \"hi_res_lossless\" instead of \"max\"".to_owned(),
+            });
+        }
+
         let track_quality = AudioQualityRequest::from_str(&raw.track_quality).map_err(|error| {
             ConfigError::InvalidValue {
                 path: "download.track_quality".to_owned(),
@@ -68,10 +82,16 @@ impl TryFrom<crate::raw::RawDownloadConfig> for DownloadConfig {
             }
         })?;
 
-        if raw.video_quality == "fhd" {
+        let video_migration = match raw.video_quality.as_str() {
+            "sd" => Some("low"),
+            "hd" => Some("medium"),
+            "fhd" => Some("high"),
+            _ => None,
+        };
+        if let Some(replacement) = video_migration {
             return Err(ConfigError::Migration {
                 path: "download.video_quality".to_owned(),
-                message: "use \"high\" instead of \"fhd\"".to_owned(),
+                message: format!("use \"{replacement}\" instead of \"{}\"", raw.video_quality),
             });
         }
 
@@ -334,6 +354,29 @@ mod tests {
             Err(ConfigError::Migration { ref path, ref message })
                 if path == "download.video_quality" && message.contains("use \"high\"")
         ));
+    }
+
+    #[test]
+    fn python_quality_values_get_migration_errors() {
+        for (key, value, replacement) in [
+            ("track_quality", "normal", "high"),
+            ("track_quality", "max", "hi_res_lossless"),
+            ("video_quality", "sd", "low"),
+            ("video_quality", "hd", "medium"),
+            ("video_quality", "fhd", "high"),
+        ] {
+            let error = ValidatedConfig::from_toml_str(&format!(
+                r#"
+                [download]
+                {key} = "{value}"
+                "#
+            ));
+            assert!(matches!(
+                error,
+                Err(ConfigError::Migration { ref message, .. })
+                    if message.contains(&format!("use \"{replacement}\""))
+            ));
+        }
     }
 
     #[test]

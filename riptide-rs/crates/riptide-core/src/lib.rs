@@ -12,7 +12,7 @@ pub use catalog::{
     Album, AlbumSummary, Artist, ArtistCredit, ArtistRole, CatalogEntity, Collection,
     CollectionKind, ExternalIdKind, ExternalIds, Playlist, ProviderExtras, Track, Video,
 };
-pub use error::{CoreError, CoreResult};
+pub use error::{CoreError, CoreResult, ProviderErrorKind};
 pub use id::{
     Codec, ProviderContainerLabel, ProviderExternalIdKind, ProviderId, ProviderQualityLabel,
     ResourceId,
