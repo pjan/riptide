@@ -66,7 +66,7 @@ pub fn decode_video_manifest(
 ) -> TidalResult<StreamVariant> {
     let decoded = decode_manifest_text(&response.manifest)?;
     let manifest = match response.manifest_mime_type {
-        model::TidalManifestMime::Bts => {
+        model::TidalManifestMime::Bts | model::TidalManifestMime::Emu => {
             let bts: model::BtsManifest =
                 serde_json::from_str(&decoded).map_err(|error| TidalError::InvalidResponse {
                     field: "video_stream.manifest".to_owned(),
@@ -135,7 +135,7 @@ fn manifest_and_codec(
     decoded: &str,
 ) -> TidalResult<(Manifest, Option<Codec>)> {
     match mime {
-        model::TidalManifestMime::Bts => {
+        model::TidalManifestMime::Bts | model::TidalManifestMime::Emu => {
             let bts: model::BtsManifest =
                 serde_json::from_str(decoded).map_err(|error| TidalError::InvalidResponse {
                     field: "stream.manifest".to_owned(),

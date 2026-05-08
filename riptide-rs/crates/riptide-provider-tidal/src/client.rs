@@ -106,13 +106,17 @@ impl TidalClient {
         reference: &MediaRef,
         quality: AudioQualityRequest,
     ) -> TidalResult<StreamVariant> {
-        let params = vec![(
-            "soundQuality".to_owned(),
-            stream::audio_quality_request_label(quality).to_owned(),
-        )];
+        let params = vec![
+            (
+                "audioquality".to_owned(),
+                stream::audio_quality_request_label(quality).to_owned(),
+            ),
+            ("playbackmode".to_owned(), "STREAM".to_owned()),
+            ("assetpresentation".to_owned(), "FULL".to_owned()),
+        ];
         let raw: model::TidalStreamResponse = self
             .get_json(
-                &format!("tracks/{}/streamUrl", reference.id.as_str()),
+                &format!("tracks/{}/playbackinfopostpaywall", reference.id.as_str()),
                 &params,
                 ApiCachePolicy::NoCache,
             )
@@ -126,13 +130,17 @@ impl TidalClient {
         reference: &MediaRef,
         quality: VideoQualityRequest,
     ) -> TidalResult<StreamVariant> {
-        let params = vec![(
-            "videoQuality".to_owned(),
-            stream::video_quality_request_label(quality).to_owned(),
-        )];
+        let params = vec![
+            (
+                "videoquality".to_owned(),
+                stream::video_quality_request_label(quality).to_owned(),
+            ),
+            ("playbackmode".to_owned(), "STREAM".to_owned()),
+            ("assetpresentation".to_owned(), "FULL".to_owned()),
+        ];
         let raw: model::TidalVideoStreamResponse = self
             .get_json(
-                &format!("videos/{}/streamUrl", reference.id.as_str()),
+                &format!("videos/{}/playbackinfopostpaywall", reference.id.as_str()),
                 &params,
                 ApiCachePolicy::NoCache,
             )

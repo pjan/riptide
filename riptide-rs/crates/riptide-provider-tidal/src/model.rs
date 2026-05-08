@@ -56,6 +56,9 @@ pub enum TidalManifestMime {
     /// TIDAL BTS JSON manifest.
     #[serde(rename = "application/vnd.tidal.bts")]
     Bts,
+    /// TIDAL EMU JSON manifest used by video playback info responses.
+    #[serde(rename = "application/vnd.tidal.emu")]
+    Emu,
     /// DASH MPD XML manifest.
     #[serde(rename = "application/dash+xml")]
     Dash,
