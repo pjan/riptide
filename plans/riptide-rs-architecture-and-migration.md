@@ -3,9 +3,7 @@
 ## Status
 
 Draft for review. No substantial implementation should start from this roadmap
-alone. Each implementation slice must have a focused plan in `docs/` that is
-reviewed for correctness, config UX, performance, edge cases, and testability
-before code is written.
+alone.
 
 ## Goal
 
@@ -175,6 +173,12 @@ Candidate types:
 ```rust
 pub struct ProviderId(String);
 pub struct ResourceId(String);
+pub struct Codec(String);
+pub struct ProviderQualityLabel(String);
+pub struct ProviderContainerLabel(String);
+pub struct BitDepth(u32);
+pub struct SampleRateHz(u32);
+pub struct ConcurrencyLimit(NonZeroUsize);
 
 pub struct MediaRef {
     pub provider: ProviderId,
@@ -195,6 +199,35 @@ pub enum ResourceKind {
 Provider-neutral catalog entities:
 
 ```rust
+pub struct Artist {
+    pub id: Option<MediaRef>,
+    pub name: String,
+    pub role: ArtistRole,
+}
+
+pub enum ArtistRole {
+    Main,
+    Featured,
+    Contributor,
+    Unknown,
+}
+
+pub struct Collection {
+    pub id: MediaRef,
+    pub kind: CollectionKind,
+    pub title: Option<String>,
+    pub owner: Option<String>,
+}
+
+pub enum CollectionKind {
+    AlbumLike,
+    Playlist,
+    Mix,
+    ArtistDiscography,
+    SearchResults,
+    LocalFolder,
+}
+
 pub enum CatalogEntity {
     Track(Track),
     Video(Video),
@@ -204,6 +237,154 @@ pub enum CatalogEntity {
     Collection(Collection),
 }
 ```
+
+`Collection` is a generic ordered container used when a provider has a group of
+items that is not semantically identical to a playlist or album. A TIDAL mix can
+normalize to `CollectionKind::Mix`. A future local folder can normalize to
+`CollectionKind::LocalFolder`.
+
+"Download artist" means expanding an `Artist` into provider-selected child
+collections according to typed command/config filters. For TIDAL parity this
+means albums, optionally EPs/singles, and optionally videos. The expansion rule
+must be implemented as a pure planning function before network or filesystem
+side effects.
+
+Quality and stream candidates:
+
+```rust
+pub enum AudioQualityRequest {
+    Low,
+    High,
+    Lossless,
+    HiResLossless,
+    Best,
+}
+
+pub enum VideoQualityRequest {
+    Low,
+    Medium,
+    High,
+    Best,
+}
+
+pub enum QualityRequest {
+    Audio(AudioQualityRequest),
+    Video(VideoQualityRequest),
+    BestAvailable,
+}
+
+pub enum AudioQuality {
+    Low,
+    High,
+    Lossless,
+    HiResLossless,
+    ProviderSpecific(ProviderQualityLabel),
+}
+
+pub enum VideoQuality {
+    Low,
+    Medium,
+    High,
+    ProviderSpecific(ProviderQualityLabel),
+}
+
+pub enum ResolvedQuality {
+    Audio(AudioQuality),
+    Video(VideoQuality),
+    ProviderSpecific {
+        provider: ProviderId,
+        label: ProviderQualityLabel,
+    },
+}
+```
+
+`QualityRequest` is what a caller asks for. `ResolvedQuality` is what the
+provider actually returns after catalog and entitlement checks.
+
+Provider-neutral stream candidates:
+
+```rust
+pub enum Manifest {
+    DirectSegments(Vec<Url>),
+    DashXml(String),
+    HlsMasterPlaylistUrl(Url),
+    HlsMediaPlaylist(String),
+}
+
+pub enum ContainerKind {
+    Flac,
+    M4a,
+    Mp4,
+    TransportStream,
+    ProviderSpecific(ProviderContainerLabel),
+}
+
+pub struct StreamVariant {
+    pub source: MediaRef,
+    pub quality: ResolvedQuality,
+    pub container: ContainerKind,
+    pub codec: Option<Codec>,
+    pub bit_depth: Option<BitDepth>,
+    pub sample_rate: Option<SampleRateHz>,
+    pub manifest: Manifest,
+}
+```
+
+`Manifest` describes media acquisition inputs after provider-specific response
+wrappers have been decoded. TIDAL BTS JSON is not a core manifest format; it is
+decoded by `riptide-provider-tidal` into one of these provider-neutral variants.
+
+Provider-neutral capability traits also live in this crate. Use `async-trait`
+for the first implementation because the registry needs trait objects. Revisit
+native async trait syntax only if dynamic dispatch is no longer required.
+
+```rust
+#[async_trait::async_trait]
+pub trait Resolver: Send + Sync {
+    async fn parse_ref(&self, input: &str) -> Result<Option<MediaRef>>;
+    async fn resolve(&self, reference: &MediaRef) -> Result<CatalogEntity>;
+}
+
+#[async_trait::async_trait]
+pub trait CollectionProvider: Send + Sync {
+    async fn children(&self, reference: &MediaRef) -> Result<Vec<CatalogEntity>>;
+}
+
+#[async_trait::async_trait]
+pub trait StreamProvider: Send + Sync {
+    async fn streams(
+        &self,
+        reference: &MediaRef,
+        requested: QualityRequest,
+    ) -> Result<Vec<StreamVariant>>;
+}
+
+#[async_trait::async_trait]
+pub trait LyricsProvider: Send + Sync {
+    async fn lyrics(&self, reference: &MediaRef) -> Result<Option<Lyrics>>;
+}
+
+pub trait Provider:
+    Resolver + CollectionProvider + StreamProvider + LyricsProvider + Send + Sync
+{
+    fn id(&self) -> &ProviderId;
+    fn capabilities(&self) -> ProviderCapabilities;
+}
+
+pub struct ProviderCapabilities {
+    pub resolve: bool,
+    pub collections: bool,
+    pub streams: bool,
+    pub lyrics: bool,
+    pub artwork: bool,
+    pub credits: bool,
+    pub search: bool,
+}
+```
+
+If a provider does not support a capability, its implementation should return a
+typed `UnsupportedCapability` error. Optional capability routing can be
+introduced later if this single supertrait becomes too restrictive.
 
 Use layered models:
 
@@ -216,6 +397,13 @@ provider raw model
 
 Avoid one universal "perfect track" structure. Keep shared fields typed and use
 explicit provider extras for non-portable data.
+
+Likely crates:
+
+- `async-trait`
+- `serde`
+- `url`
+- `thiserror`
 
 ### `riptide-config`
 
@@ -286,41 +474,21 @@ TTL.
 ### `riptide-provider-tidal`
 
 TIDAL auth, TIDAL REST API models, endpoint client, pagination, resource URL
-parsing, TIDAL quality mapping, TIDAL manifest decoding, lyrics, credits,
-covers, and TIDAL-to-core model conversion.
+parsing, TIDAL quality mapping, TIDAL manifest wrapper decoding, lyrics,
+credits, covers, and TIDAL-to-core model conversion.
 
 This crate owns the raw `serde` models equivalent to the current Python
 Pydantic models. It also owns tolerant deserialization for unstable TIDAL
 responses.
 
-Provider traits should be capability-based:
+The provider implements the provider-neutral traits defined in `riptide-core`.
+It does not define provider capability traits of its own.
 
-```rust
-#[async_trait::async_trait]
-pub trait Resolver: Send + Sync {
-    async fn parse_ref(&self, input: &str) -> Result<Option<MediaRef>>;
-    async fn resolve(&self, reference: &MediaRef) -> Result<CatalogEntity>;
-}
-
-#[async_trait::async_trait]
-pub trait CollectionProvider: Send + Sync {
-    async fn children(&self, reference: &MediaRef) -> Result<Vec<CatalogEntity>>;
-}
-
-#[async_trait::async_trait]
-pub trait StreamProvider: Send + Sync {
-    async fn streams(
-        &self,
-        reference: &MediaRef,
-        requested: QualityRequest,
-    ) -> Result<Vec<StreamVariant>>;
-}
-
-#[async_trait::async_trait]
-pub trait LyricsProvider: Send + Sync {
-    async fn lyrics(&self, reference: &MediaRef) -> Result<Option<Lyrics>>;
-}
-```
+TIDAL-specific manifest wrapper knowledge lives here. For example, this crate
+decodes TIDAL BTS JSON and base64 API payloads, then returns a provider-neutral
+`Manifest` variant such as `DirectSegments`, `DashXml`, or
+`HlsMasterPlaylistUrl`. Generic DASH and HLS parsing still belongs in
+`riptide-media`.
 
 Start with compile-time provider crates. Do not build dynamic plugin loading in
 the first phase.
@@ -341,7 +509,6 @@ Likely crates:
 
 Responsibilities:
 
-- Parse TIDAL BTS JSON manifests.
 - Parse DASH XML manifests.
 - Parse HLS playlists.
 - Download segments with bounded concurrency.
@@ -349,25 +516,9 @@ Responsibilities:
 - Run ffmpeg for container conversion/extraction.
 - Clean up temporary files robustly.
 
-Candidate model:
+Candidate processing model:
 
 ```rust
-pub enum Manifest {
-    DirectSegments(Vec<Url>),
-    Dash(DashManifest),
-    Hls(HlsManifest),
-}
-
-pub struct StreamVariant {
-    pub source: MediaRef,
-    pub quality: Quality,
-    pub container: ContainerKind,
-    pub codec: Option<String>,
-    pub bit_depth: Option<BitDepth>,
-    pub sample_rate: Option<SampleRateHz>,
-    pub manifest: Manifest,
-}
-
 pub struct DownloadPlan {
     pub output_stem: PathBuf,
     pub variant: StreamVariant,
@@ -412,6 +563,10 @@ Responsibilities:
 
 The listener must not duplicate download logic.
 
+Initial listener queues are in-memory only, matching the current Python
+behavior. Persistent queues are out of scope until a later explicit scheduling
+or daemon slice.
+
 ### `riptide-cli`
 
 Binary crate. CLI parsing, user-facing output, logging setup, and command
@@ -439,6 +594,11 @@ pub struct ListService;
 pub struct DownloadService;
 pub struct ExportService;
 ```
+
+`ExportService` writes resolved provider resources to non-download artifacts,
+such as URL lists, M3U playlists, JSON manifests, or future provider migration
+exports. It should reuse provider resolution and collection expansion instead
+of maintaining separate traversal logic.
 
 `DownloadService` owns orchestration:
 
@@ -548,7 +708,7 @@ Use TDD for each slice.
 Create fixtures from current Python behavior before porting:
 
 - TIDAL album, playlist, track, video, lyrics, stream, and review response JSON.
-- BTS JSON manifest.
+- TIDAL BTS JSON manifest wrapper.
 - DASH XML manifest.
 - HLS master and media playlists.
 - Template inputs and expected paths.
@@ -628,7 +788,8 @@ Tests:
 
 Deliverables:
 
-- BTS JSON manifest parser.
+- TIDAL stream response decoding into provider-neutral manifest variants.
+- Provider-neutral manifest handling.
 - DASH XML parser.
 - HLS parser.
 - Segment downloader with streaming I/O.
@@ -705,7 +866,8 @@ Deliverables:
 - Provider registry.
 - Capability introspection.
 - `tidal:` canonical refs.
-- Initial local provider design plan.
+- Initial local provider design document. This deliverable is a plan, not a
+  local provider implementation.
 
 Tests:
 
@@ -715,20 +877,17 @@ Tests:
 
 ## Open Design Decisions
 
-These should be resolved before or during the relevant slice plan.
+These should be resolved before the linked slice plan is approved.
 
-1. Whether `riptide-rs` must preserve exact Python template compatibility or
-   only documented compatibility.
-2. Whether auth tokens should remain JSON files initially or use OS keyrings.
-3. Whether API cache should use `http-cache-reqwest` directly or a custom
-   SQLite cache for tighter TTL/debug behavior.
-4. Whether `lofty` is sufficient for all metadata tags.
-5. Whether listener mode should be single-resource sequential with per-resource
-   track concurrency, matching current behavior, or more generally scheduled.
-6. What canonical provider reference syntax should be:
-   `tidal:track:123`, `tidal://track/123`, or both.
-7. How much local-library scanning belongs in the initial architecture versus a
-   later provider slice.
+| Decision | Blocks |
+| --- | --- |
+| Whether `riptide-rs` must preserve exact Python template compatibility or only documented compatibility. | Slice 2 |
+| Whether auth tokens should remain JSON files initially or use OS keyrings. | Slice 3 |
+| Whether API cache should use `http-cache-reqwest` directly or a custom SQLite cache for tighter TTL/debug behavior. | Slice 3 |
+| Whether `lofty` is sufficient for all metadata tags. | Slice 5 |
+| Whether listener mode remains an in-memory queue with single-resource sequential processing and per-resource track concurrency, matching current behavior, or becomes a more general scheduler. Persistent queues are out of scope unless this decision changes. | Slice 7 |
+| What canonical provider reference syntax should be: `tidal:track:123`, `tidal://track/123`, or both. | Slice 8 |
+| How much local-library scanning belongs in the initial architecture versus a later provider slice. | Slice 8 |
 
 ## Review Checklist
 
@@ -745,4 +904,3 @@ Before implementation starts, review this plan and each per-slice plan for:
 - Migration: do breaking changes fail with actionable messages?
 - Error context: do CLI errors preserve the failed operation?
 - Documentation: are public foundational items documented before stabilization?
-
