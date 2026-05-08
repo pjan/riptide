@@ -1079,6 +1079,7 @@ impl ProgressGroup {
             bar: Some(bar),
             label,
             bytes_downloaded: AtomicU64::new(0),
+            byte_total: AtomicU64::new(0),
         };
         progress.phase("resolving stream");
         progress
@@ -1101,6 +1102,7 @@ struct TrackProgress {
     bar: Option<ProgressBar>,
     label: String,
     bytes_downloaded: AtomicU64,
+    byte_total: AtomicU64,
 }
 
 impl TrackProgress {
@@ -1109,6 +1111,7 @@ impl TrackProgress {
             bar: None,
             label,
             bytes_downloaded: AtomicU64::new(0),
+            byte_total: AtomicU64::new(0),
         }
     }
 
@@ -1126,6 +1129,8 @@ impl TrackProgress {
             bar.set_prefix("download");
             bar.set_length(u64::try_from(total_segments).unwrap_or(u64::MAX));
             bar.set_position(0);
+            self.bytes_downloaded.store(0, Ordering::Relaxed);
+            self.byte_total.store(0, Ordering::Relaxed);
             bar.set_message(self.status_message());
         }
     }
@@ -1159,13 +1164,26 @@ impl DownloadProgress for TrackProgress {
         &self,
         segment_index: usize,
         total_segments: usize,
-        _content_length: Option<u64>,
+        content_length: Option<u64>,
     ) {
         if let Some(bar) = &self.bar {
             bar.set_style(track_progress_style());
             bar.set_prefix("download");
-            bar.set_length(u64::try_from(total_segments).unwrap_or(u64::MAX));
-            bar.set_position(u64::try_from(segment_index).unwrap_or(u64::MAX));
+            if total_segments == 1 {
+                if let Some(content_length) = content_length {
+                    self.byte_total.store(content_length, Ordering::Relaxed);
+                    bar.set_length(content_length);
+                    bar.set_position(self.bytes_downloaded.load(Ordering::Relaxed));
+                } else {
+                    self.byte_total.store(0, Ordering::Relaxed);
+                    bar.set_length(1);
+                    bar.set_position(0);
+                }
+            } else {
+                self.byte_total.store(0, Ordering::Relaxed);
+                bar.set_length(u64::try_from(total_segments).unwrap_or(u64::MAX));
+                bar.set_position(u64::try_from(segment_index).unwrap_or(u64::MAX));
+            }
             bar.set_message(self.status_message());
         }
     }
@@ -1174,14 +1192,22 @@ impl DownloadProgress for TrackProgress {
         self.bytes_downloaded
             .fetch_add(bytes_downloaded, Ordering::Relaxed);
         if let Some(bar) = &self.bar {
+            if self.byte_total.load(Ordering::Relaxed) > 0 {
+                bar.set_position(self.bytes_downloaded.load(Ordering::Relaxed));
+            }
             bar.set_message(self.status_message());
         }
     }
 
     fn on_segment_complete(&self, segment_index: usize, _total_segments: usize) {
         if let Some(bar) = &self.bar {
-            let position = u64::try_from(segment_index.saturating_add(1)).unwrap_or(u64::MAX);
-            bar.set_position(position);
+            let byte_total = self.byte_total.load(Ordering::Relaxed);
+            if byte_total > 0 {
+                bar.set_position(byte_total);
+            } else {
+                let position = u64::try_from(segment_index.saturating_add(1)).unwrap_or(u64::MAX);
+                bar.set_position(position);
+            }
             bar.set_message(self.status_message());
         }
     }
