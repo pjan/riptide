@@ -36,6 +36,9 @@ pub trait DownloadProgress: Send + Sync {
 
     /// Called as bytes are appended to the output.
     fn on_bytes(&self, bytes_downloaded: u64);
+
+    /// Called after a segment has been fully appended to the output.
+    fn on_segment_complete(&self, _segment_index: usize, _total_segments: usize) {}
 }
 
 /// Downloads segments to a file using streaming I/O.
@@ -64,6 +67,9 @@ pub async fn download_segments(
         )
         .await?;
         Box::pin(append_file(&mut output, &part_path)).await?;
+        if let Some(progress) = progress {
+            progress.on_segment_complete(index, segments.len());
+        }
         let _ = tokio::fs::remove_file(&part_path).await;
     }
 

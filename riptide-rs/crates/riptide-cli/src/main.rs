@@ -1,8 +1,9 @@
 //! Minimal riptide-rs command-line entry point.
 
 use anyhow::{Context, Result};
-use clap::{Args, Parser, Subcommand};
+use clap::{Args, Parser, Subcommand, ValueEnum};
 use directories::{ProjectDirs, UserDirs};
+use indicatif::{HumanBytes, MultiProgress, ProgressBar, ProgressDrawTarget, ProgressStyle};
 use riptide_config::{
     Concurrency, DownloadConfig, M3uConfig, MetadataConfig, ValidatedConfig, VideosMode,
 };
@@ -13,6 +14,7 @@ use riptide_core::{
 };
 use riptide_media::{
     download_segments, plan_download, post_process, resolve_manifest_async, DownloadOptions,
+    DownloadProgress,
 };
 use riptide_metadata::{
     metadata_from_track, metadata_from_video, save_cover, write_lyrics_sidecar, write_m3u,
@@ -28,8 +30,12 @@ use riptide_template::{
 use std::{
     collections::{HashMap, HashSet},
     fs,
+    io::IsTerminal,
     path::{Path, PathBuf},
-    sync::Arc,
+    sync::{
+        atomic::{AtomicU64, Ordering},
+        Arc,
+    },
 };
 use url::Url;
 
@@ -192,6 +198,9 @@ struct DownloadArgs {
     /// Metadata behavior.
     #[command(flatten)]
     metadata: MetadataFlags,
+    /// Progress display mode.
+    #[arg(long, value_enum, default_value = "auto")]
+    progress: ProgressMode,
 }
 
 /// Existing-file flags.
@@ -217,6 +226,17 @@ struct MetadataFlags {
     /// Skip cover art.
     #[arg(long)]
     no_cover: bool,
+}
+
+/// Download progress display mode.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+enum ProgressMode {
+    /// Show progress bars when stderr is an interactive terminal.
+    Auto,
+    /// Always show progress bars.
+    Always,
+    /// Disable progress bars and print simple status lines.
+    Never,
 }
 
 #[derive(Clone)]
@@ -492,6 +512,7 @@ async fn run_download(options: &SharedOptions, args: DownloadArgs) -> Result<()>
     let http = http_client()?;
     let semaphore = Arc::new(tokio::sync::Semaphore::new(effective.concurrency));
     let cover_cache = Arc::new(tokio::sync::Mutex::new(CoverCacheState::default()));
+    let progress = DownloadProgressUi::new(args.progress);
     let mut m3u_entries = Vec::new();
 
     for input in &args.urls {
@@ -511,17 +532,20 @@ async fn run_download(options: &SharedOptions, args: DownloadArgs) -> Result<()>
             _ => None,
         };
         let children = expand_download_entities(&provider, &reference, entity).await?;
+        let children = children
+            .into_iter()
+            .filter(|entity| !should_skip_entity(entity, effective.videos_mode))
+            .collect::<Vec<_>>();
+        let progress_group = progress.group(input, children.len());
         let mut handles = Vec::new();
         for entity in children {
-            if should_skip_entity(&entity, effective.videos_mode) {
-                continue;
-            }
             let provider = provider.clone();
             let http = http.clone();
             let options = effective.clone();
             let semaphore = Arc::clone(&semaphore);
             let cover_cache = Arc::clone(&cover_cache);
             let parent_album = parent_album.clone();
+            let progress_group = progress_group.clone();
             handles.push(tokio::spawn(async move {
                 let _permit = semaphore
                     .acquire_owned()
@@ -534,6 +558,7 @@ async fn run_download(options: &SharedOptions, args: DownloadArgs) -> Result<()>
                     &cover_cache,
                     parent_album.as_ref(),
                     &entity,
+                    &progress_group,
                 )
                 .await
             }));
@@ -544,6 +569,7 @@ async fn run_download(options: &SharedOptions, args: DownloadArgs) -> Result<()>
             };
             m3u_entries.push(entry);
         }
+        progress_group.finish();
     }
 
     if effective.m3u.save && !m3u_entries.is_empty() {
@@ -589,6 +615,7 @@ async fn download_entity(
     cover_cache: &CoverCache,
     parent_album: Option<&Album>,
     entity: &CatalogEntity,
+    progress_group: &ProgressGroup,
 ) -> Result<Option<M3uEntry>> {
     let Some(item) = download_item_for_entity(entity, options) else {
         return Ok(None);
@@ -604,8 +631,10 @@ async fn download_entity(
         .context("provider returned no stream variants")?;
     let plan = render_download_plan(options, &context, &stream)?;
     let final_path = plan.final_path();
+    let track_progress = progress_group.track(&options.root, &final_path);
     if options.skip_existing && final_path.exists() {
-        println!("skip existing: {}", final_path.display());
+        track_progress.finish_skipped();
+        progress_group.advance();
         return Ok(Some(m3u_entry(
             &options.root,
             &final_path,
@@ -614,7 +643,8 @@ async fn download_entity(
         )));
     }
 
-    let prepared = execute_media_download(http, &plan, &final_path).await?;
+    let prepared = execute_media_download(http, &plan, &final_path, &track_progress).await?;
+    track_progress.phase("tagging");
     let cover_data = write_metadata_if_enabled(
         provider,
         http,
@@ -628,12 +658,16 @@ async fn download_entity(
         },
     )
     .await?;
+    track_progress.phase("persisting");
     persist_processed_file(&prepared.processed, &final_path).await?;
+    track_progress.phase("lyrics");
     write_lyrics_sidecar_if_available(provider, options, &item, &final_path).await?;
+    track_progress.phase("cover");
     write_cover_sidecar_if_available(options, cover_cache, cover_data.as_deref(), &final_path)
         .await?;
 
-    println!("downloaded: {}", final_path.display());
+    track_progress.finish_done();
+    progress_group.advance();
     Ok(Some(m3u_entry(
         &options.root,
         &final_path,
@@ -775,6 +809,7 @@ async fn execute_media_download(
     http: &HttpClient,
     plan: &riptide_media::DownloadPlan,
     final_path: &Path,
+    progress: &TrackProgress,
 ) -> Result<PreparedDownload> {
     let final_parent = final_path.parent().unwrap_or_else(|| Path::new("."));
     fs::create_dir_all(final_parent)
@@ -786,18 +821,21 @@ async fn execute_media_download(
     let download_path = temp_dir
         .path()
         .join(format!("download{}", plan.download_extension.as_str()));
+    progress.phase("resolving media");
     let resolved = resolve_manifest_async(&plan.manifest, http)
         .await
         .context("failed to resolve media manifest")?;
+    progress.start_download(resolved.urls.len());
     download_segments(
         http,
         &resolved.urls,
         &download_path,
         DownloadOptions::default(),
-        None,
+        Some(progress),
     )
     .await
     .context("failed to download media segments")?;
+    progress.phase("post-processing");
     let processed = post_process(download_path, &plan.post_process)
         .await
         .context("failed to post-process media")?;
@@ -980,6 +1018,198 @@ async fn claim_cover_sidecar(cover_cache: &CoverCache, cover_path: &Path) -> boo
     }
     let mut cache = cover_cache.lock().await;
     cache.written_sidecars.insert(cover_path.to_path_buf())
+}
+
+#[derive(Clone)]
+struct DownloadProgressUi {
+    multi: Option<Arc<MultiProgress>>,
+}
+
+impl DownloadProgressUi {
+    fn new(mode: ProgressMode) -> Self {
+        let enabled = match mode {
+            ProgressMode::Auto => std::io::stderr().is_terminal(),
+            ProgressMode::Always => true,
+            ProgressMode::Never => false,
+        };
+        let multi = enabled.then(|| {
+            let multi = MultiProgress::with_draw_target(ProgressDrawTarget::stderr_with_hz(10));
+            Arc::new(multi)
+        });
+        Self { multi }
+    }
+
+    fn group(&self, input: &str, total_items: usize) -> ProgressGroup {
+        let Some(multi) = &self.multi else {
+            eprintln!("downloading: {input}");
+            return ProgressGroup {
+                multi: None,
+                overall: None,
+            };
+        };
+        let total = u64::try_from(total_items).unwrap_or(u64::MAX);
+        let overall = multi.add(ProgressBar::new(total));
+        overall.set_style(overall_progress_style());
+        overall.set_prefix("overall");
+        overall.set_message(input.to_owned());
+        ProgressGroup {
+            multi: Some(Arc::clone(multi)),
+            overall: Some(overall),
+        }
+    }
+}
+
+#[derive(Clone)]
+struct ProgressGroup {
+    multi: Option<Arc<MultiProgress>>,
+    overall: Option<ProgressBar>,
+}
+
+impl ProgressGroup {
+    fn track(&self, root: &Path, final_path: &Path) -> TrackProgress {
+        let label = display_path(root, final_path);
+        let Some(multi) = &self.multi else {
+            eprintln!("download: {label}");
+            return TrackProgress::disabled(label);
+        };
+        let bar = multi.add(ProgressBar::new_spinner());
+        bar.set_style(spinner_progress_style());
+        bar.enable_steady_tick(std::time::Duration::from_millis(100));
+        let progress = TrackProgress {
+            multi: Some(Arc::clone(multi)),
+            bar: Some(bar),
+            label,
+            bytes_downloaded: AtomicU64::new(0),
+        };
+        progress.phase("resolving stream");
+        progress
+    }
+
+    fn advance(&self) {
+        if let Some(overall) = &self.overall {
+            overall.inc(1);
+        }
+    }
+
+    fn finish(&self) {
+        if let Some(overall) = &self.overall {
+            overall.finish_and_clear();
+        }
+    }
+}
+
+struct TrackProgress {
+    multi: Option<Arc<MultiProgress>>,
+    bar: Option<ProgressBar>,
+    label: String,
+    bytes_downloaded: AtomicU64,
+}
+
+impl TrackProgress {
+    const fn disabled(label: String) -> Self {
+        Self {
+            multi: None,
+            bar: None,
+            label,
+            bytes_downloaded: AtomicU64::new(0),
+        }
+    }
+
+    fn phase(&self, phase: &'static str) {
+        if let Some(bar) = &self.bar {
+            bar.set_style(spinner_progress_style());
+            bar.set_message(format!("{phase} {}", self.label));
+        }
+    }
+
+    fn start_download(&self, total_segments: usize) {
+        if let Some(bar) = &self.bar {
+            bar.set_style(segment_progress_style());
+            bar.set_length(u64::try_from(total_segments).unwrap_or(u64::MAX));
+            bar.set_position(0);
+            bar.set_message(self.download_message());
+        }
+    }
+
+    fn finish_done(&self) {
+        self.finish_line("done");
+    }
+
+    fn finish_skipped(&self) {
+        self.finish_line("skip existing");
+    }
+
+    fn finish_line(&self, prefix: &'static str) {
+        if let Some(bar) = &self.bar {
+            bar.finish_and_clear();
+        }
+        let message = format!("{prefix}: {}", self.label);
+        if let Some(multi) = &self.multi {
+            let _ = multi.println(message);
+        } else {
+            eprintln!("{message}");
+        }
+    }
+
+    fn download_message(&self) -> String {
+        let bytes = self.bytes_downloaded.load(Ordering::Relaxed);
+        format!("{} {}", HumanBytes(bytes), self.label)
+    }
+}
+
+impl DownloadProgress for TrackProgress {
+    fn on_segment_start(
+        &self,
+        segment_index: usize,
+        total_segments: usize,
+        _content_length: Option<u64>,
+    ) {
+        if let Some(bar) = &self.bar {
+            bar.set_style(segment_progress_style());
+            bar.set_length(u64::try_from(total_segments).unwrap_or(u64::MAX));
+            bar.set_position(u64::try_from(segment_index).unwrap_or(u64::MAX));
+            bar.set_message(self.download_message());
+        }
+    }
+
+    fn on_bytes(&self, bytes_downloaded: u64) {
+        self.bytes_downloaded
+            .fetch_add(bytes_downloaded, Ordering::Relaxed);
+        if let Some(bar) = &self.bar {
+            bar.set_message(self.download_message());
+        }
+    }
+
+    fn on_segment_complete(&self, segment_index: usize, _total_segments: usize) {
+        if let Some(bar) = &self.bar {
+            let position = u64::try_from(segment_index.saturating_add(1)).unwrap_or(u64::MAX);
+            bar.set_position(position);
+            bar.set_message(self.download_message());
+        }
+    }
+}
+
+fn display_path(root: &Path, final_path: &Path) -> String {
+    final_path
+        .strip_prefix(root)
+        .map_or(final_path, |path| path)
+        .display()
+        .to_string()
+}
+
+fn overall_progress_style() -> ProgressStyle {
+    ProgressStyle::with_template("{prefix:.bold} [{bar:30.cyan/blue}] {pos}/{len} {msg}")
+        .unwrap_or_else(|_| ProgressStyle::default_bar())
+}
+
+fn segment_progress_style() -> ProgressStyle {
+    ProgressStyle::with_template("{spinner:.green} [{bar:30.cyan/blue}] {pos}/{len} segments {msg}")
+        .unwrap_or_else(|_| ProgressStyle::default_bar())
+}
+
+fn spinner_progress_style() -> ProgressStyle {
+    ProgressStyle::with_template("{spinner:.green} {msg}")
+        .unwrap_or_else(|_| ProgressStyle::default_spinner())
 }
 
 fn m3u_entry(
