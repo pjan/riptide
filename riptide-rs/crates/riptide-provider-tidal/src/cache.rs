@@ -97,10 +97,33 @@ impl RedbApiCache {
                     message: error.to_string(),
                 })?;
             }
-            Database::create(&path_for_open).map_err(|error| TidalError::CacheUnavailable {
-                path: path_for_open.display().to_string(),
-                message: error.to_string(),
-            })
+            let database =
+                Database::create(&path_for_open).map_err(|error| TidalError::CacheUnavailable {
+                    path: path_for_open.display().to_string(),
+                    message: error.to_string(),
+                })?;
+            let write = database
+                .begin_write()
+                .map_err(|error| TidalError::CacheUnavailable {
+                    path: path_for_open.display().to_string(),
+                    message: error.to_string(),
+                })?;
+            {
+                let _table =
+                    write
+                        .open_table(TABLE)
+                        .map_err(|error| TidalError::CacheUnavailable {
+                            path: path_for_open.display().to_string(),
+                            message: error.to_string(),
+                        })?;
+            }
+            write
+                .commit()
+                .map_err(|error| TidalError::CacheUnavailable {
+                    path: path_for_open.display().to_string(),
+                    message: error.to_string(),
+                })?;
+            Ok(database)
         })
         .await
         .map_err(|error| TidalError::CacheUnavailable {
@@ -224,6 +247,17 @@ mod tests {
         );
         assert_eq!(left, right);
         assert!(!left.as_str().contains("token"));
+    }
+
+    #[tokio::test]
+    async fn new_cache_returns_miss_before_first_write() -> TidalResult<()> {
+        let dir = tempfile::tempdir().map_err(|error| TidalError::Cache {
+            message: error.to_string(),
+        })?;
+        let cache = RedbApiCache::open(dir.path().join("cache.redb")).await?;
+        let key = CacheKey::new("GET", "tracks/1", Some("US"), &[]);
+        assert!(cache.get(&key).await?.is_none());
+        Ok(())
     }
 
     #[tokio::test]
