@@ -940,6 +940,7 @@ name = "riptide-provider-tidal"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "base64",
  "redb",
  "reqwest",
  "riptide-core",

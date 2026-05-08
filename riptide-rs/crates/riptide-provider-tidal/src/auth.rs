@@ -1,6 +1,7 @@
 //! TIDAL OAuth device-flow authentication and token storage.
 
 use crate::{TidalError, TidalResult};
+use base64::{engine::general_purpose::STANDARD, Engine as _};
 use reqwest::Url;
 use serde::{Deserialize, Serialize};
 use std::{
@@ -11,6 +12,8 @@ use std::{
 
 const SCOPE: &str = "r_usr+w_usr+w_sub";
 const DEVICE_GRANT: &str = "urn:ietf:params:oauth:grant-type:device_code";
+const DEFAULT_CREDENTIALS_B64: &str =
+    "ZlgySnhkbW50WldLMGl4VDsxTm45QWZEQWp4cmdKRkpiS05XTGVBeUtHVkdtSU51WFBQTEhWWEF2eEFnPQ==";
 
 macro_rules! secret_string {
     ($name:ident) => {
@@ -165,28 +168,61 @@ pub struct TidalCredentials {
 impl TidalCredentials {
     /// Loads credentials from supported environment variables.
     pub fn from_env() -> TidalResult<Self> {
-        if let (Ok(client_id), Ok(client_secret)) = (
-            env::var("RIPTIDE_TIDAL_CLIENT_ID"),
-            env::var("RIPTIDE_TIDAL_CLIENT_SECRET"),
-        ) {
+        Self::from_sources(
+            env::var("RIPTIDE_TIDAL_CLIENT_ID").ok(),
+            env::var("RIPTIDE_TIDAL_CLIENT_SECRET").ok(),
+            env::var("RIPTIDE_TIDAL_CREDENTIALS").ok(),
+            env::var("riptide_AUTH").ok(),
+        )
+    }
+
+    fn from_sources(
+        client_id: Option<String>,
+        client_secret: Option<String>,
+        combined: Option<String>,
+        legacy_combined: Option<String>,
+    ) -> TidalResult<Self> {
+        if let (Some(client_id), Some(client_secret)) = (client_id, client_secret) {
             return Ok(Self {
                 client_id: TidalClientId::new(client_id)?,
                 client_secret: TidalClientSecret::new(client_secret)?,
             });
         }
-        if let Ok(combined) = env::var("RIPTIDE_TIDAL_CREDENTIALS") {
-            let Some((client_id, client_secret)) = combined.split_once(';') else {
-                return Err(TidalError::InvalidValue {
-                    field: "RIPTIDE_TIDAL_CREDENTIALS",
-                    message: "expected client_id;client_secret".to_owned(),
-                });
-            };
-            return Ok(Self {
-                client_id: TidalClientId::new(client_id)?,
-                client_secret: TidalClientSecret::new(client_secret)?,
-            });
+        if let Some(combined) = combined {
+            return Self::from_combined("RIPTIDE_TIDAL_CREDENTIALS", &combined);
         }
-        Err(TidalError::MissingCredentials)
+        if let Some(combined) = legacy_combined {
+            return Self::from_combined("riptide_AUTH", &combined);
+        }
+        Self::from_default_fallback()
+    }
+
+    fn from_combined(field: &'static str, value: &str) -> TidalResult<Self> {
+        let Some((client_id, client_secret)) = value.split_once(';') else {
+            return Err(TidalError::InvalidValue {
+                field,
+                message: "expected client_id;client_secret".to_owned(),
+            });
+        };
+        Ok(Self {
+            client_id: TidalClientId::new(client_id)?,
+            client_secret: TidalClientSecret::new(client_secret)?,
+        })
+    }
+
+    fn from_default_fallback() -> TidalResult<Self> {
+        let bytes =
+            STANDARD
+                .decode(DEFAULT_CREDENTIALS_B64)
+                .map_err(|error| TidalError::InvalidValue {
+                    field: "default_credentials",
+                    message: error.to_string(),
+                })?;
+        let decoded = String::from_utf8(bytes).map_err(|error| TidalError::InvalidValue {
+            field: "default_credentials",
+            message: error.to_string(),
+        })?;
+        Self::from_combined("default_credentials", &decoded)
     }
 }
 
@@ -574,6 +610,40 @@ mod tests {
     fn slow_down_adds_five_seconds() -> TidalResult<()> {
         let interval = PollingInterval::new(Duration::from_secs(1))?.slow_down();
         assert_eq!(interval.as_duration(), Duration::from_secs(6));
+        Ok(())
+    }
+
+    #[test]
+    fn credentials_use_new_env_pair_first() -> TidalResult<()> {
+        let credentials = TidalCredentials::from_sources(
+            Some("new-id".to_owned()),
+            Some("new-secret".to_owned()),
+            Some("combined-id;combined-secret".to_owned()),
+            Some("legacy-id;legacy-secret".to_owned()),
+        )?;
+        assert_eq!(credentials.client_id.as_str(), "new-id");
+        assert_eq!(credentials.client_secret.expose_secret(), "new-secret");
+        Ok(())
+    }
+
+    #[test]
+    fn credentials_accept_legacy_combined_env_name() -> TidalResult<()> {
+        let credentials = TidalCredentials::from_sources(
+            None,
+            None,
+            None,
+            Some("legacy-id;legacy-secret".to_owned()),
+        )?;
+        assert_eq!(credentials.client_id.as_str(), "legacy-id");
+        assert_eq!(credentials.client_secret.expose_secret(), "legacy-secret");
+        Ok(())
+    }
+
+    #[test]
+    fn credentials_fall_back_to_python_default() -> TidalResult<()> {
+        let credentials = TidalCredentials::from_sources(None, None, None, None)?;
+        assert_eq!(credentials.client_id.as_str(), "fX2JxdmntZWK0ixT");
+        assert!(!credentials.client_secret.expose_secret().is_empty());
         Ok(())
     }
 
