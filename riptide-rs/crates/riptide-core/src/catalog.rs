@@ -1,6 +1,8 @@
 //! Provider-neutral catalog entities.
 
-use crate::{DiscNumber, ItemCount, MediaDuration, MediaRef, ProviderExternalIdKind, TrackNumber};
+use crate::{
+    CoverArtId, DiscNumber, ItemCount, MediaDuration, MediaRef, ProviderExternalIdKind, TrackNumber,
+};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
@@ -61,6 +63,9 @@ pub struct AlbumSummary {
     pub title: String,
     /// Album artists.
     pub artists: Vec<ArtistCredit>,
+    /// Provider cover art identifier when available.
+    #[serde(default)]
+    pub cover: Option<CoverArtId>,
 }
 
 /// Provider-neutral track.
@@ -148,6 +153,9 @@ pub struct Album {
     /// High-resolution lossless flag.
     #[serde(default)]
     pub hires_lossless: bool,
+    /// Provider cover art identifier when available.
+    #[serde(default)]
+    pub cover: Option<CoverArtId>,
 }
 
 /// Provider-neutral playlist.
@@ -269,6 +277,7 @@ mod tests {
             explicit: None,
             release_type: Some("ALBUM".to_owned()),
             hires_lossless: true,
+            cover: None,
         };
         assert!(album.hires_lossless);
         assert_eq!(album.release_type.as_deref(), Some("ALBUM"));

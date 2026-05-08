@@ -3,10 +3,13 @@
 use crate::{
     auth::{TidalAuthClient, TidalTokenState, TokenStore},
     cache::{ApiCache, ApiCachePolicy, CacheEntryToWrite, CacheKey},
-    convert, model, TidalError, TidalResult, TIDAL_PROVIDER_ID,
+    convert, model, stream, TidalError, TidalResult, TIDAL_PROVIDER_ID,
 };
 use reqwest::{StatusCode, Url};
-use riptide_core::{Album, Artist, CatalogEntity, Playlist, Track, Video};
+use riptide_core::{
+    Album, Artist, AudioQualityRequest, CatalogEntity, MediaRef, Playlist, ResourceKind,
+    StreamVariant, Track, Video, VideoQualityRequest,
+};
 use serde::de::DeserializeOwned;
 use std::sync::Arc;
 use std::time::Duration;
@@ -68,23 +71,17 @@ impl TidalClient {
 
     /// Fetches a track.
     pub async fn track(&self, id: &str) -> TidalResult<Track> {
-        convert::track(
-            self.get_json(&format!("tracks/{id}"), &[], ttl()).await?,
-        )
+        convert::track(self.get_json(&format!("tracks/{id}"), &[], ttl()).await?)
     }
 
     /// Fetches a video.
     pub async fn video(&self, id: &str) -> TidalResult<Video> {
-        convert::video(
-            self.get_json(&format!("videos/{id}"), &[], ttl()).await?,
-        )
+        convert::video(self.get_json(&format!("videos/{id}"), &[], ttl()).await?)
     }
 
     /// Fetches an album.
     pub async fn album(&self, id: &str) -> TidalResult<Album> {
-        convert::album(
-            self.get_json(&format!("albums/{id}"), &[], ttl()).await?,
-        )
+        convert::album(self.get_json(&format!("albums/{id}"), &[], ttl()).await?)
     }
 
     /// Fetches a playlist.
@@ -101,6 +98,93 @@ impl TidalClient {
             self.get_json(&format!("tracks/{id}/lyrics"), &[], ttl())
                 .await?,
         )
+    }
+
+    /// Fetches a track stream variant.
+    pub async fn track_stream(
+        &self,
+        reference: &MediaRef,
+        quality: AudioQualityRequest,
+    ) -> TidalResult<StreamVariant> {
+        let params = vec![(
+            "soundQuality".to_owned(),
+            stream::audio_quality_request_label(quality).to_owned(),
+        )];
+        let raw: model::TidalStreamResponse = self
+            .get_json(
+                &format!("tracks/{}/streamUrl", reference.id.as_str()),
+                &params,
+                ApiCachePolicy::NoCache,
+            )
+            .await?;
+        stream::decode_track_manifest(&raw, reference, quality)
+    }
+
+    /// Fetches a video stream variant.
+    pub async fn video_stream(
+        &self,
+        reference: &MediaRef,
+        quality: VideoQualityRequest,
+    ) -> TidalResult<StreamVariant> {
+        let params = vec![(
+            "videoQuality".to_owned(),
+            stream::video_quality_request_label(quality).to_owned(),
+        )];
+        let raw: model::TidalVideoStreamResponse = self
+            .get_json(
+                &format!("videos/{}/streamUrl", reference.id.as_str()),
+                &params,
+                ApiCachePolicy::NoCache,
+            )
+            .await?;
+        stream::decode_video_manifest(&raw, reference)
+    }
+
+    /// Fetches ordered children for album and playlist resources.
+    pub async fn children(&self, reference: &MediaRef) -> TidalResult<Vec<CatalogEntity>> {
+        match reference.kind {
+            ResourceKind::Album => self.album_items(reference.id.as_str()).await,
+            ResourceKind::Playlist => self.playlist_items(reference.id.as_str()).await,
+            kind => Err(TidalError::UnsupportedCapability {
+                capability: match kind {
+                    ResourceKind::Track => "track children",
+                    ResourceKind::Video => "video children",
+                    ResourceKind::Artist => "artist children",
+                    ResourceKind::Mix => "mix children",
+                    ResourceKind::Album | ResourceKind::Playlist => unreachable!(),
+                },
+            }),
+        }
+    }
+
+    async fn album_items(&self, id: &str) -> TidalResult<Vec<CatalogEntity>> {
+        self.paged_items(&format!("albums/{id}/items"), 20).await
+    }
+
+    async fn playlist_items(&self, id: &str) -> TidalResult<Vec<CatalogEntity>> {
+        self.paged_items(&format!("playlists/{id}/items"), 20).await
+    }
+
+    async fn paged_items(&self, endpoint: &str, limit: u32) -> TidalResult<Vec<CatalogEntity>> {
+        let mut offset = 0;
+        let mut output = Vec::new();
+        loop {
+            let params = vec![
+                ("limit".to_owned(), limit.to_string()),
+                ("offset".to_owned(), offset.to_string()),
+            ];
+            let page: model::Items<serde_json::Value> =
+                self.get_json(endpoint, &params, ttl()).await?;
+            let count = page.items.len();
+            for value in page.items {
+                output.push(convert_catalog_item(&value)?);
+            }
+            if count < usize::try_from(limit).unwrap_or(usize::MAX) {
+                break;
+            }
+            offset += limit;
+        }
+        Ok(output)
     }
 
     /// Searches TIDAL.
@@ -201,9 +285,7 @@ impl TidalClient {
                     key,
                     value: value.clone(),
                     expires_at: time::OffsetDateTime::now_utc()
-                        + time::Duration::seconds(
-                            i64::try_from(ttl.as_secs()).unwrap_or(3600),
-                        ),
+                        + time::Duration::seconds(i64::try_from(ttl.as_secs()).unwrap_or(3600)),
                 })
                 .await?;
         }
@@ -305,6 +387,31 @@ impl TidalClient {
     }
 }
 
+fn convert_catalog_item(value: &serde_json::Value) -> TidalResult<CatalogEntity> {
+    let item = value.get("item").cloned().unwrap_or_else(|| value.clone());
+    let kind = value
+        .get("type")
+        .or_else(|| item.get("type"))
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or_default();
+    if kind.eq_ignore_ascii_case("video") || item.get("quality").is_some() {
+        return serde_json::from_value::<model::TidalVideo>(item)
+            .map_err(|error| TidalError::InvalidResponse {
+                field: "items.video".to_owned(),
+                message: error.to_string(),
+            })
+            .and_then(convert::video)
+            .map(CatalogEntity::Video);
+    }
+    serde_json::from_value::<model::TidalTrack>(item)
+        .map_err(|error| TidalError::InvalidResponse {
+            field: "items.track".to_owned(),
+            message: error.to_string(),
+        })
+        .and_then(convert::track)
+        .map(CatalogEntity::Track)
+}
+
 const fn ttl() -> ApiCachePolicy {
     ApiCachePolicy::Ttl(DEFAULT_TTL)
 }
@@ -316,9 +423,9 @@ async fn response_json(
     let status = response.status();
     if !status.is_success() {
         let message = response
-        .text()
-        .await
-        .unwrap_or_else(|e| format!("<body read failed: {e}>"));
+            .text()
+            .await
+            .unwrap_or_else(|e| format!("<body read failed: {e}>"));
         return Err(TidalError::Api {
             operation: endpoint.to_owned(),
             status: status.as_u16(),

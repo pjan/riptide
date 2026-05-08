@@ -1,0 +1,16 @@
+[package]
+name = "riptide-metadata"
+edition.workspace = true
+license.workspace = true
+version.workspace = true
+
+[dependencies]
+lofty.workspace = true
+riptide-core = { path = "../riptide-core" }
+tempfile.workspace = true
+thiserror.workspace = true
+time.workspace = true
+tokio.workspace = true
+
+[lints]
+workspace = true

@@ -6,5 +6,6 @@ pub mod validated;
 
 pub use error::{ConfigError, ConfigResult};
 pub use validated::{
-    DownloadConfig, ListenerConfig, ListenerPort, ListenerSecret, ValidatedConfig,
+    Concurrency, DownloadConfig, DownloadRoot, ListenerConfig, ListenerPort, ListenerSecret,
+    M3uConfig, MetadataConfig, SinglesMode, TemplateConfig, ValidatedConfig, VideosMode,
 };

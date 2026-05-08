@@ -22,6 +22,32 @@ pub enum ContainerKind {
     ProviderSpecific(ProviderContainerLabel),
 }
 
+/// Typed file extension derived from a media container.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ContainerExtension {
+    /// FLAC file extension.
+    Flac,
+    /// M4A file extension.
+    M4a,
+    /// MP4 file extension.
+    Mp4,
+    /// MPEG transport stream extension.
+    Ts,
+}
+
+impl ContainerExtension {
+    /// Returns the extension including the leading dot.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Flac => ".flac",
+            Self::M4a => ".m4a",
+            Self::Mp4 => ".mp4",
+            Self::Ts => ".ts",
+        }
+    }
+}
+
 /// Provider-neutral manifest input.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -53,6 +79,9 @@ pub struct StreamVariant {
     pub sample_rate: Option<SampleRateHz>,
     /// Manifest input.
     pub manifest: Manifest,
+    /// Provider-neutral post-processing intent.
+    #[serde(default)]
+    pub post_process: Vec<PostProcessStep>,
 }
 
 /// Lyrics source attribution.
@@ -160,8 +189,17 @@ mod tests {
             bit_depth: None,
             sample_rate: None,
             manifest: Manifest::DashXml("<MPD />".to_owned()),
+            post_process: Vec::new(),
         };
         assert!(matches!(variant.manifest, Manifest::DashXml(_)));
         Ok(())
+    }
+
+    #[test]
+    fn container_extension_uses_closed_labels() {
+        assert_eq!(ContainerExtension::Flac.as_str(), ".flac");
+        assert_eq!(ContainerExtension::M4a.as_str(), ".m4a");
+        assert_eq!(ContainerExtension::Mp4.as_str(), ".mp4");
+        assert_eq!(ContainerExtension::Ts.as_str(), ".ts");
     }
 }

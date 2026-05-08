@@ -1,11 +1,14 @@
 //! TIDAL model conversion into provider-neutral core types.
 
 use crate::{
-    model::{TidalArtistRole, TidalMediaTag, TidalTopHitKind, TidalTrack, TidalVideo, TidalAlbum, TidalPlaylist, TidalLyrics, TidalArtist},
+    model::{
+        TidalAlbum, TidalArtist, TidalArtistRole, TidalLyrics, TidalMediaTag, TidalPlaylist,
+        TidalTopHitKind, TidalTrack, TidalVideo,
+    },
     CountryCode, TidalError, TidalResult, TIDAL_PROVIDER_ID,
 };
 use riptide_core::{
-    Album, AlbumSummary, Artist, ArtistCredit, ArtistRole, AudioQuality, CatalogEntity,
+    Album, AlbumSummary, Artist, ArtistCredit, ArtistRole, AudioQuality, CatalogEntity, CoverArtId,
     ExternalIdKind, ExternalIds, ItemCount, Lyrics, LyricsSource, LyricsSourceName, MediaDuration,
     MediaRef, Playlist, ProviderQualityLabel, ResourceId, ResourceKind, Track, TrackNumber, Video,
     VideoQuality,
@@ -33,17 +36,7 @@ pub fn track(track: TidalTrack) -> TidalResult<Track> {
         id: media_ref(ResourceKind::Track, &track.id)?,
         title: track.title,
         artists: artists(track.artist, track.artists)?,
-        album: track
-            .album
-            .and_then(|album| album.id.zip(album.title))
-            .map(|(id, title)| {
-                Ok(AlbumSummary {
-                    id: media_ref(ResourceKind::Album, &id)?,
-                    title,
-                    artists: Vec::new(),
-                })
-            })
-            .transpose()?,
+        album: track.album.map(album_summary).transpose()?.flatten(),
         duration: track.duration.map(MediaDuration::from_secs),
         track_number: track
             .track_number
@@ -67,7 +60,10 @@ pub fn track(track: TidalTrack) -> TidalResult<Track> {
         copyright: track.copyright,
         bpm: track.bpm,
         quality_label: track.audio_quality,
-        dolby_atmos: track.media_metadata.tags.contains(&TidalMediaTag::DolbyAtmos),
+        dolby_atmos: track
+            .media_metadata
+            .tags
+            .contains(&TidalMediaTag::DolbyAtmos),
     })
 }
 
@@ -77,17 +73,7 @@ pub fn video(video: TidalVideo) -> TidalResult<Video> {
         id: media_ref(ResourceKind::Video, &video.id)?,
         title: video.title,
         artists: artists(video.artist, video.artists)?,
-        album: video
-            .album
-            .and_then(|album| album.id.zip(album.title))
-            .map(|(id, title)| {
-                Ok(AlbumSummary {
-                    id: media_ref(ResourceKind::Album, &id)?,
-                    title,
-                    artists: Vec::new(),
-                })
-            })
-            .transpose()?,
+        album: video.album.map(album_summary).transpose()?.flatten(),
         duration: video.duration.map(MediaDuration::from_secs),
         track_number: video
             .track_number
@@ -135,7 +121,30 @@ pub fn album(album: TidalAlbum) -> TidalResult<Album> {
             })?,
         explicit: album.explicit,
         release_type: album.release_type,
-        hires_lossless: album.media_metadata.tags.contains(&TidalMediaTag::HiResLossless),
+        hires_lossless: album
+            .media_metadata
+            .tags
+            .contains(&TidalMediaTag::HiResLossless),
+        cover: album.cover.map(cover_art_id).transpose()?,
+    })
+}
+
+fn album_summary(album: crate::model::TidalAlbumSummary) -> TidalResult<Option<AlbumSummary>> {
+    let Some((id, title)) = album.id.zip(album.title) else {
+        return Ok(None);
+    };
+    Ok(Some(AlbumSummary {
+        id: media_ref(ResourceKind::Album, &id)?,
+        title,
+        artists: Vec::new(),
+        cover: album.cover.map(cover_art_id).transpose()?,
+    }))
+}
+
+fn cover_art_id(value: String) -> TidalResult<CoverArtId> {
+    CoverArtId::new(value).map_err(|error| TidalError::InvalidResponse {
+        field: "cover".to_owned(),
+        message: error.to_string(),
     })
 }
 
@@ -159,8 +168,16 @@ pub fn playlist(playlist: TidalPlaylist) -> TidalResult<Playlist> {
                 })?,
             )
         },
-        created_at: playlist.created.as_deref().map(parse_datetime).transpose()?,
-        updated_at: playlist.last_updated.as_deref().map(parse_datetime).transpose()?,
+        created_at: playlist
+            .created
+            .as_deref()
+            .map(parse_datetime)
+            .transpose()?,
+        updated_at: playlist
+            .last_updated
+            .as_deref()
+            .map(parse_datetime)
+            .transpose()?,
     })
 }
 
@@ -339,6 +356,7 @@ mod tests {
             album: Some(TidalAlbumSummary {
                 id: Some(100),
                 title: Some("Test Album".to_owned()),
+                cover: Some("abcdef12-3456-7890-abcd-ef1234567890".to_owned()),
             }),
             media_metadata: MediaMetadata {
                 tags: vec![TidalMediaTag::DolbyAtmos],
@@ -352,9 +370,15 @@ mod tests {
         assert_eq!(result.title, "Test Track");
         assert_eq!(result.id.id.as_str(), "1");
         assert_eq!(result.id.kind, ResourceKind::Track);
-        assert_eq!(result.duration.map(|d| d.as_duration().as_secs()), Some(300));
+        assert_eq!(
+            result.duration.map(|d| d.as_duration().as_secs()),
+            Some(300)
+        );
         assert_eq!(result.track_number.map(TrackNumber::get), Some(3));
-        assert_eq!(result.disc_number.map(riptide_core::DiscNumber::get), Some(1));
+        assert_eq!(
+            result.disc_number.map(riptide_core::DiscNumber::get),
+            Some(1)
+        );
         assert_eq!(result.version.as_deref(), Some("Radio Edit"));
         assert_eq!(result.copyright.as_deref(), Some("2024 Label"));
         assert_eq!(result.bpm, Some(120));
@@ -462,6 +486,7 @@ mod tests {
             number_of_tracks: Some(12),
             number_of_videos: Some(2),
             explicit: Some(false),
+            cover: Some("abcdef12-3456-7890-abcd-ef1234567890".to_owned()),
             release_type: Some("ALBUM".to_owned()),
             artist: None,
             artists: Vec::new(),
@@ -517,8 +542,14 @@ mod tests {
         assert_eq!(audio_quality("HIGH")?, AudioQuality::High);
         assert_eq!(audio_quality("LOSSLESS")?, AudioQuality::Lossless);
         assert_eq!(audio_quality("HI_RES")?, AudioQuality::HiResLossless);
-        assert_eq!(audio_quality("HI_RES_LOSSLESS")?, AudioQuality::HiResLossless);
-        assert!(matches!(audio_quality("UNKNOWN")?, AudioQuality::ProviderSpecific(_)));
+        assert_eq!(
+            audio_quality("HI_RES_LOSSLESS")?,
+            AudioQuality::HiResLossless
+        );
+        assert!(matches!(
+            audio_quality("UNKNOWN")?,
+            AudioQuality::ProviderSpecific(_)
+        ));
         Ok(())
     }
 
@@ -527,7 +558,10 @@ mod tests {
         assert_eq!(video_quality("LOW")?, VideoQuality::Low);
         assert_eq!(video_quality("MEDIUM")?, VideoQuality::Medium);
         assert_eq!(video_quality("HIGH")?, VideoQuality::High);
-        assert!(matches!(video_quality("4K")?, VideoQuality::ProviderSpecific(_)));
+        assert!(matches!(
+            video_quality("4K")?,
+            VideoQuality::ProviderSpecific(_)
+        ));
         Ok(())
     }
 

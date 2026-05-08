@@ -17,6 +17,8 @@
           rustToolchain
           pkgs.cargo-nextest
           pkgs.clippy
+          pkgs.ffmpeg
+          pkgs.protobuf
           pkgs.rustfmt
           pkgs.cacert
         ];

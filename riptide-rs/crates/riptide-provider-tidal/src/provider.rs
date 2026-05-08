@@ -1,12 +1,11 @@
 //! Provider trait implementation for TIDAL.
 
-use crate::{
-    resource::TidalResource, TidalClient, TidalError, TIDAL_PROVIDER_ID,
-};
+use crate::{resource::TidalResource, TidalClient, TidalError, TIDAL_PROVIDER_ID};
 use async_trait::async_trait;
 use riptide_core::{
     CatalogEntity, CollectionProvider, CoreError, CoreResult, Lyrics, LyricsProvider, MediaRef,
-    Provider, ProviderCapabilities, ProviderId, QualityRequest, Resolver, StreamProvider, StreamVariant,
+    Provider, ProviderCapabilities, ProviderId, QualityRequest, Resolver, StreamProvider,
+    StreamVariant,
 };
 
 /// TIDAL provider.
@@ -72,11 +71,11 @@ impl Resolver for TidalProvider {
 
 #[async_trait]
 impl CollectionProvider for TidalProvider {
-    async fn children(&self, _reference: &MediaRef) -> CoreResult<Vec<CatalogEntity>> {
-        Err(CoreError::UnsupportedCapability {
-            provider: self.id.clone(),
-            capability: "collections",
-        })
+    async fn children(&self, reference: &MediaRef) -> CoreResult<Vec<CatalogEntity>> {
+        self.client
+            .children(reference)
+            .await
+            .map_err(TidalError::into_core)
     }
 }
 
@@ -84,13 +83,28 @@ impl CollectionProvider for TidalProvider {
 impl StreamProvider for TidalProvider {
     async fn streams(
         &self,
-        _reference: &MediaRef,
-        _requested: QualityRequest,
+        reference: &MediaRef,
+        requested: QualityRequest,
     ) -> CoreResult<Vec<StreamVariant>> {
-        Err(CoreError::UnsupportedCapability {
-            provider: self.id.clone(),
-            capability: "streams",
-        })
+        match (reference.kind, requested) {
+            (riptide_core::ResourceKind::Track, QualityRequest::Audio(quality)) => self
+                .client
+                .track_stream(reference, quality)
+                .await
+                .map(|stream| vec![stream])
+                .map_err(TidalError::into_core),
+            (riptide_core::ResourceKind::Video, QualityRequest::Video(quality)) => self
+                .client
+                .video_stream(reference, quality)
+                .await
+                .map(|stream| vec![stream])
+                .map_err(TidalError::into_core),
+            (_, _) => Err(CoreError::UnsupportedResourceKind {
+                provider: self.id.clone(),
+                kind: reference.kind,
+                operation: "streams",
+            }),
+        }
     }
 }
 
@@ -112,6 +126,8 @@ impl Provider for TidalProvider {
 
     fn capabilities(&self) -> ProviderCapabilities {
         ProviderCapabilities::RESOLVE
+            | ProviderCapabilities::COLLECTIONS
+            | ProviderCapabilities::STREAMS
             | ProviderCapabilities::LYRICS
             | ProviderCapabilities::SEARCH
     }

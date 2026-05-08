@@ -109,6 +109,10 @@ non_empty_string_type!(
     /// Provider-specific container label.
     ProviderContainerLabel
 );
+non_empty_string_type!(
+    /// Provider cover art identifier used to request artwork bytes.
+    CoverArtId
+);
 
 /// Provider-neutral media resource kind.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]

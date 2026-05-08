@@ -2,14 +2,34 @@
 
 use anyhow::{Context, Result};
 use clap::{Args, Parser, Subcommand};
-use directories::ProjectDirs;
-use riptide_core::CatalogEntity;
-use riptide_provider_tidal::{
-    FileTokenStore, HttpClient, RedbApiCache, TidalAuthClient, TidalClient, TidalCredentials,
-    TidalError, TokenStore,
+use directories::{ProjectDirs, UserDirs};
+use riptide_config::{
+    Concurrency, DownloadConfig, M3uConfig, MetadataConfig, ValidatedConfig, VideosMode,
 };
-use riptide_template::{context_from_fixture_str, CompiledTemplate, TemplateContext};
-use std::{fs, path::{Path, PathBuf}, sync::Arc};
+use riptide_core::{
+    CatalogEntity, CollectionProvider, CoverArtId, LyricsProvider, MediaDuration, MediaRef,
+    QualityRequest, Resolver, StreamProvider, Track, Video,
+};
+use riptide_media::{
+    download_segments, plan_download, post_process, resolve_manifest_async, DownloadOptions,
+};
+use riptide_metadata::{
+    metadata_from_track, metadata_from_video, save_cover, write_lyrics_sidecar, write_m3u,
+    write_tags, M3uEntry,
+};
+use riptide_provider_tidal::{
+    cover_url, CoverArtSize, FileTokenStore, HttpClient, RedbApiCache, TidalAuthClient,
+    TidalClient, TidalCredentials, TidalError, TidalProvider, TokenStore,
+};
+use riptide_template::{
+    context_from_fixture_str, CompiledTemplate, TemplateContext, TemplateRenderOptions,
+};
+use std::{
+    collections::HashMap,
+    fs,
+    path::{Path, PathBuf},
+    sync::Arc,
+};
 use url::Url;
 
 const DEFAULT_AUTH_BASE_URL: &str = "https://auth.tidal.com/v1/oauth2/";
@@ -26,6 +46,10 @@ struct Cli {
     /// Path to the TIDAL API cache database.
     #[arg(long, global = true)]
     cache_file: Option<PathBuf>,
+
+    /// Path to the TOML configuration file.
+    #[arg(long, global = true)]
+    config: Option<PathBuf>,
 
     /// TIDAL auth base URL.
     #[arg(long, global = true, default_value = DEFAULT_AUTH_BASE_URL, hide = true)]
@@ -62,6 +86,8 @@ enum Command {
         #[command(subcommand)]
         command: ListCommand,
     },
+    /// Download media from TIDAL.
+    Download(DownloadArgs),
 }
 
 /// Configuration commands.
@@ -134,8 +160,75 @@ enum ListCommand {
 struct SharedOptions {
     auth_file: Option<PathBuf>,
     cache_file: Option<PathBuf>,
+    config_file: Option<PathBuf>,
     auth_base_url: Url,
     api_base_url: Url,
+}
+
+/// Download command options.
+#[derive(Debug, Args)]
+struct DownloadArgs {
+    /// TIDAL URLs or resource references.
+    urls: Vec<String>,
+    /// Override audio quality.
+    #[arg(long)]
+    audio_quality: Option<String>,
+    /// Override video quality.
+    #[arg(long)]
+    video_quality: Option<String>,
+    /// Override output template.
+    #[arg(long)]
+    output: Option<String>,
+    /// Override download root.
+    #[arg(long)]
+    path: Option<PathBuf>,
+    /// Override concurrency.
+    #[arg(long)]
+    concurrency: Option<u8>,
+    /// Existing-file behavior.
+    #[command(flatten)]
+    existing: ExistingFlags,
+    /// Metadata behavior.
+    #[command(flatten)]
+    metadata: MetadataFlags,
+}
+
+/// Existing-file flags.
+#[derive(Debug, Args)]
+struct ExistingFlags {
+    /// Skip existing files.
+    #[arg(long)]
+    skip_existing: bool,
+    /// Overwrite existing files.
+    #[arg(long)]
+    no_skip_existing: bool,
+}
+
+/// Metadata flags.
+#[derive(Debug, Args)]
+struct MetadataFlags {
+    /// Skip metadata tagging.
+    #[arg(long)]
+    no_metadata: bool,
+    /// Skip lyrics fetch.
+    #[arg(long)]
+    no_lyrics: bool,
+    /// Skip cover art.
+    #[arg(long)]
+    no_cover: bool,
+}
+
+#[derive(Clone)]
+struct EffectiveDownloadOptions {
+    root: PathBuf,
+    audio_quality: riptide_core::AudioQualityRequest,
+    video_quality: riptide_core::VideoQualityRequest,
+    skip_existing: bool,
+    concurrency: usize,
+    template: CompiledTemplate,
+    metadata: MetadataConfig,
+    m3u: M3uConfig,
+    videos_mode: VideosMode,
 }
 
 /// Shared single-resource list options.
@@ -153,6 +246,7 @@ async fn main() -> Result<()> {
     let Cli {
         auth_file,
         cache_file,
+        config,
         auth_base_url,
         api_base_url,
         command,
@@ -160,6 +254,7 @@ async fn main() -> Result<()> {
     let options = SharedOptions {
         auth_file,
         cache_file,
+        config_file: config,
         auth_base_url,
         api_base_url,
     };
@@ -170,6 +265,7 @@ async fn main() -> Result<()> {
         Command::Template { command } => run_template(command),
         Command::Auth { command } => run_auth(&options, command).await,
         Command::List { command } => run_list(&options, command).await,
+        Command::Download(args) => run_download(&options, args).await,
     }
 }
 
@@ -376,10 +472,494 @@ async fn run_list(options: &SharedOptions, command: ListCommand) -> Result<()> {
     }
 }
 
+async fn run_download(options: &SharedOptions, args: DownloadArgs) -> Result<()> {
+    if args.urls.is_empty() {
+        anyhow::bail!("at least one URL or resource reference is required");
+    }
+    let config = load_runtime_config(options)?;
+    let effective =
+        effective_download_options(&config.download, config.metadata, config.m3u, &args)
+            .context("failed to build effective download options")?;
+    fs::create_dir_all(&effective.root).with_context(|| {
+        format!(
+            "failed to create download root {}",
+            effective.root.display()
+        )
+    })?;
+
+    let provider = TidalProvider::new(tidal_client(options).await?);
+    let http = http_client()?;
+    let semaphore = Arc::new(tokio::sync::Semaphore::new(effective.concurrency));
+    let cover_cache = Arc::new(tokio::sync::Mutex::new(HashMap::new()));
+    let mut m3u_entries = Vec::new();
+
+    for input in &args.urls {
+        let Some(reference) = provider
+            .parse_ref(input)
+            .await
+            .with_context(|| format!("failed to parse input `{input}`"))?
+        else {
+            anyhow::bail!("unsupported TIDAL input: {input}");
+        };
+        let entity = provider
+            .resolve(&reference)
+            .await
+            .with_context(|| format!("failed to resolve `{input}`"))?;
+        let children = expand_download_entities(&provider, &reference, entity).await?;
+        let mut handles = Vec::new();
+        for entity in children {
+            if should_skip_entity(&entity, effective.videos_mode) {
+                continue;
+            }
+            let provider = provider.clone();
+            let http = http.clone();
+            let options = effective.clone();
+            let semaphore = Arc::clone(&semaphore);
+            let cover_cache = Arc::clone(&cover_cache);
+            handles.push(tokio::spawn(async move {
+                let _permit = semaphore
+                    .acquire_owned()
+                    .await
+                    .context("download semaphore was closed")?;
+                download_entity(&provider, &http, &options, &cover_cache, &entity).await
+            }));
+        }
+        for handle in handles {
+            let Some(entry) = handle.await.context("download task panicked")?? else {
+                continue;
+            };
+            m3u_entries.push(entry);
+        }
+    }
+
+    if effective.m3u.save && !m3u_entries.is_empty() {
+        let output = effective.root.join("riptide.m3u");
+        tokio::task::spawn_blocking(move || write_m3u(&m3u_entries, &output))
+            .await
+            .context("failed to join M3U writer")?
+            .context("failed to write M3U playlist")?;
+    }
+    Ok(())
+}
+
+async fn expand_download_entities(
+    provider: &TidalProvider,
+    reference: &MediaRef,
+    entity: CatalogEntity,
+) -> Result<Vec<CatalogEntity>> {
+    match entity {
+        CatalogEntity::Album(_) | CatalogEntity::Playlist(_) => provider
+            .children(reference)
+            .await
+            .context("failed to fetch collection children"),
+        CatalogEntity::Track(_) | CatalogEntity::Video(_) => Ok(vec![entity]),
+        CatalogEntity::Artist(_) | CatalogEntity::Collection(_) => {
+            anyhow::bail!(
+                "artist and generic collection downloads are not implemented in this slice"
+            )
+        }
+    }
+}
+
+const fn should_skip_entity(entity: &CatalogEntity, videos_mode: VideosMode) -> bool {
+    matches!(
+        (entity, videos_mode),
+        (CatalogEntity::Video(_), VideosMode::Skip) | (CatalogEntity::Track(_), VideosMode::Only)
+    )
+}
+
+async fn download_entity(
+    provider: &TidalProvider,
+    http: &HttpClient,
+    options: &EffectiveDownloadOptions,
+    cover_cache: &CoverCache,
+    entity: &CatalogEntity,
+) -> Result<Option<M3uEntry>> {
+    let Some(item) = download_item_for_entity(entity, options) else {
+        return Ok(None);
+    };
+    let stream = provider
+        .streams(item.reference, item.quality.clone())
+        .await
+        .context("failed to resolve stream")?
+        .into_iter()
+        .next()
+        .context("provider returned no stream variants")?;
+    let plan = render_download_plan(options, &item.context, &stream)?;
+    let final_path = plan.final_path();
+    if options.skip_existing && final_path.exists() {
+        println!("skip existing: {}", final_path.display());
+        return Ok(Some(m3u_entry(
+            &options.root,
+            &final_path,
+            item.title,
+            item.duration,
+        )));
+    }
+
+    let processed = execute_media_download(http, &plan, &final_path).await?;
+    let cover_data = write_metadata_if_enabled(
+        provider,
+        http,
+        options,
+        cover_cache,
+        &item,
+        &processed,
+        plan.final_extension,
+    )
+    .await?;
+    persist_processed_file(&processed, &final_path).await?;
+    write_lyrics_sidecar_if_available(provider, options, &item, &final_path).await?;
+    write_cover_sidecar_if_available(options, cover_data.as_deref(), &final_path).await?;
+
+    println!("downloaded: {}", final_path.display());
+    Ok(Some(m3u_entry(
+        &options.root,
+        &final_path,
+        item.title,
+        item.duration,
+    )))
+}
+
+struct DownloadItem<'a> {
+    reference: &'a MediaRef,
+    quality: QualityRequest,
+    context: TemplateContext,
+    duration: Option<MediaDuration>,
+    metadata: MediaMetadataInput<'a>,
+    title: String,
+    cover: Option<CoverArtId>,
+}
+
+fn download_item_for_entity<'a>(
+    entity: &'a CatalogEntity,
+    options: &EffectiveDownloadOptions,
+) -> Option<DownloadItem<'a>> {
+    match entity {
+        CatalogEntity::Track(track) => Some(DownloadItem {
+            reference: &track.id,
+            quality: QualityRequest::Audio(options.audio_quality),
+            context: context_for_entity(entity),
+            duration: track.duration,
+            metadata: MediaMetadataInput::Track(track),
+            title: track.title.clone(),
+            cover: track.album.as_ref().and_then(|album| album.cover.clone()),
+        }),
+        CatalogEntity::Video(video) => Some(DownloadItem {
+            reference: &video.id,
+            quality: QualityRequest::Video(options.video_quality),
+            context: context_for_entity(entity),
+            duration: video.duration,
+            metadata: MediaMetadataInput::Video(video),
+            title: video.title.clone(),
+            cover: video.album.as_ref().and_then(|album| album.cover.clone()),
+        }),
+        _ => None,
+    }
+}
+
+fn render_download_plan(
+    options: &EffectiveDownloadOptions,
+    context: &TemplateContext,
+    stream: &riptide_core::StreamVariant,
+) -> Result<riptide_media::DownloadPlan> {
+    let rendered = options
+        .template
+        .render_with_options(
+            context,
+            TemplateRenderOptions {
+                with_asterisk_ext: false,
+            },
+        )
+        .context("failed to render output template")?;
+    let output_stem = options.root.join(rendered.as_str());
+    Ok(plan_download(stream, output_stem))
+}
+
+async fn execute_media_download(
+    http: &HttpClient,
+    plan: &riptide_media::DownloadPlan,
+    final_path: &Path,
+) -> Result<PathBuf> {
+    let final_parent = final_path.parent().unwrap_or_else(|| Path::new("."));
+    fs::create_dir_all(final_parent)
+        .with_context(|| format!("failed to create {}", final_parent.display()))?;
+    let temp_dir = tempfile::Builder::new()
+        .prefix(".riptide-tmp-")
+        .tempdir_in(final_parent)
+        .with_context(|| format!("failed to create temp dir in {}", final_parent.display()))?;
+    let download_path = temp_dir
+        .path()
+        .join(format!("download{}", plan.download_extension.as_str()));
+    let resolved = resolve_manifest_async(&plan.manifest, http)
+        .await
+        .context("failed to resolve media manifest")?;
+    download_segments(
+        http,
+        &resolved.urls,
+        &download_path,
+        DownloadOptions::default(),
+        None,
+    )
+    .await
+    .context("failed to download media segments")?;
+    let processed = post_process(download_path, &plan.post_process)
+        .await
+        .context("failed to post-process media")?;
+    Ok(processed)
+}
+
+async fn write_metadata_if_enabled(
+    provider: &TidalProvider,
+    http: &HttpClient,
+    options: &EffectiveDownloadOptions,
+    cover_cache: &CoverCache,
+    item: &DownloadItem<'_>,
+    processed: &Path,
+    final_extension: riptide_core::ContainerExtension,
+) -> Result<Option<Arc<[u8]>>> {
+    let cover_data = if options.metadata.enable && options.metadata.cover {
+        fetch_cover_data(http, cover_cache, item.cover.as_ref()).await?
+    } else {
+        None
+    };
+    if options.metadata.enable {
+        let mut metadata = match item.metadata {
+            MediaMetadataInput::Track(track) => metadata_from_track(track, None),
+            MediaMetadataInput::Video(video) => metadata_from_video(video),
+        };
+        metadata.cover_data.clone_from(&cover_data);
+        if options.metadata.lyrics && matches!(item.metadata, MediaMetadataInput::Track(_)) {
+            metadata.lyrics = provider
+                .lyrics(item.reference)
+                .await
+                .ok()
+                .flatten()
+                .and_then(|lyrics| lyrics.synchronized_lrc.or(lyrics.text));
+        }
+        let tag_path = processed.to_path_buf();
+        tokio::task::spawn_blocking(move || write_tags(&tag_path, final_extension, &metadata))
+            .await
+            .context("failed to join metadata writer")?
+            .context("failed to write metadata")?;
+    }
+    Ok(cover_data)
+}
+
+async fn fetch_cover_data(
+    http: &HttpClient,
+    cover_cache: &CoverCache,
+    cover: Option<&CoverArtId>,
+) -> Result<Option<Arc<[u8]>>> {
+    let Some(cover) = cover else {
+        return Ok(None);
+    };
+    let cached = {
+        let cache = cover_cache.lock().await;
+        cache.get(cover).cloned()
+    };
+    if let Some(data) = cached {
+        return Ok(Some(data));
+    }
+    let url = cover_url(cover, CoverArtSize::default()).context("failed to build cover URL")?;
+    let response = http
+        .get(url.clone())
+        .send()
+        .await
+        .with_context(|| format!("failed to fetch cover art {url}"))?
+        .error_for_status()
+        .with_context(|| format!("failed to fetch cover art {url}"))?;
+    let bytes = response
+        .bytes()
+        .await
+        .with_context(|| format!("failed to read cover art {url}"))?;
+    let data = Arc::from(bytes.as_ref());
+    cover_cache
+        .lock()
+        .await
+        .insert(cover.clone(), Arc::clone(&data));
+    Ok(Some(data))
+}
+
+async fn persist_processed_file(processed: &Path, final_path: &Path) -> Result<()> {
+    if let Some(parent) = final_path.parent() {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("failed to create {}", parent.display()))?;
+    }
+    tokio::fs::rename(&processed, &final_path)
+        .await
+        .with_context(|| format!("failed to persist {}", final_path.display()))?;
+    Ok(())
+}
+
+async fn write_lyrics_sidecar_if_available(
+    provider: &TidalProvider,
+    options: &EffectiveDownloadOptions,
+    item: &DownloadItem<'_>,
+    final_path: &Path,
+) -> Result<()> {
+    if options.metadata.enable
+        && options.metadata.lyrics
+        && matches!(item.metadata, MediaMetadataInput::Track(_))
+    {
+        if let Ok(Some(lyrics)) = provider.lyrics(item.reference).await {
+            if let Some(lrc) = lyrics.synchronized_lrc {
+                let sidecar_path = final_path.to_path_buf();
+                tokio::task::spawn_blocking(move || write_lyrics_sidecar(&sidecar_path, &lrc))
+                    .await
+                    .context("failed to join lyrics sidecar writer")?
+                    .context("failed to write lyrics sidecar")?;
+            }
+        }
+    }
+    Ok(())
+}
+
+async fn write_cover_sidecar_if_available(
+    options: &EffectiveDownloadOptions,
+    cover_data: Option<&[u8]>,
+    final_path: &Path,
+) -> Result<()> {
+    if options.metadata.enable && options.metadata.cover {
+        if let Some(cover_data) = cover_data {
+            let cover_path = final_path.with_extension("jpg");
+            let data = cover_data.to_vec();
+            tokio::task::spawn_blocking(move || save_cover(&data, &cover_path))
+                .await
+                .context("failed to join cover writer")?
+                .context("failed to write cover sidecar")?;
+        }
+    }
+    Ok(())
+}
+
+enum MediaMetadataInput<'a> {
+    Track(&'a Track),
+    Video(&'a Video),
+}
+
+type CoverCache = Arc<tokio::sync::Mutex<HashMap<CoverArtId, Arc<[u8]>>>>;
+
+fn m3u_entry(
+    root: &Path,
+    final_path: &Path,
+    title: String,
+    duration: Option<MediaDuration>,
+) -> M3uEntry {
+    let path = final_path
+        .strip_prefix(root)
+        .map_or_else(|_| final_path.to_path_buf(), Path::to_path_buf);
+    M3uEntry {
+        path,
+        title,
+        duration,
+    }
+}
+
 fn compile_optional_template(template: Option<String>) -> Result<Option<CompiledTemplate>> {
     template
         .map(|template| CompiledTemplate::parse(&template).context("failed to compile template"))
         .transpose()
+}
+
+fn load_runtime_config(options: &SharedOptions) -> Result<ValidatedConfig> {
+    let Some(path) = options.config_file.clone().or_else(default_config_file) else {
+        return Ok(ValidatedConfig::default());
+    };
+    if !path.exists() {
+        return Ok(ValidatedConfig::default());
+    }
+    let contents = fs::read_to_string(&path)
+        .with_context(|| format!("failed to load config from {}", path.display()))?;
+    ValidatedConfig::from_toml_str(&contents)
+        .with_context(|| format!("failed to validate config from {}", path.display()))
+}
+
+fn default_config_file() -> Option<PathBuf> {
+    project_dirs().map(|dirs| dirs.config_dir().join("config.toml"))
+}
+
+fn effective_download_options(
+    download: &DownloadConfig,
+    metadata: MetadataConfig,
+    m3u: M3uConfig,
+    args: &DownloadArgs,
+) -> Result<EffectiveDownloadOptions> {
+    let audio_quality = parse_or_config_audio(args.audio_quality.as_deref(), download)?;
+    let video_quality = parse_or_config_video(args.video_quality.as_deref(), download)?;
+    let concurrency = args.concurrency.map_or_else(
+        || Ok(download.concurrency.get()),
+        |value| Concurrency::new(value).map(Concurrency::get),
+    )?;
+    let root = args
+        .path
+        .clone()
+        .or_else(|| {
+            download
+                .download_root
+                .as_ref()
+                .map(|root| root.as_path().to_path_buf())
+        })
+        .or_else(default_download_root)
+        .context("failed to determine download root")?;
+    let template = match &args.output {
+        Some(template) => {
+            CompiledTemplate::parse(template).context("failed to compile output template")?
+        }
+        None => download.templates.default.clone(),
+    };
+    let skip_existing = if args.existing.no_skip_existing {
+        false
+    } else if args.existing.skip_existing {
+        true
+    } else {
+        download.skip_existing
+    };
+    Ok(EffectiveDownloadOptions {
+        root,
+        audio_quality,
+        video_quality,
+        skip_existing,
+        concurrency: usize::from(concurrency),
+        template,
+        metadata: MetadataConfig {
+            enable: metadata.enable && !args.metadata.no_metadata,
+            lyrics: metadata.lyrics && !args.metadata.no_lyrics,
+            cover: metadata.cover && !args.metadata.no_cover,
+        },
+        m3u,
+        videos_mode: download.videos_mode,
+    })
+}
+
+fn parse_or_config_audio(
+    value: Option<&str>,
+    download: &DownloadConfig,
+) -> Result<riptide_core::AudioQualityRequest> {
+    value.map_or(Ok(download.audio_quality), |value| {
+        value
+            .parse()
+            .with_context(|| format!("invalid audio quality `{value}`"))
+    })
+}
+
+fn parse_or_config_video(
+    value: Option<&str>,
+    download: &DownloadConfig,
+) -> Result<riptide_core::VideoQualityRequest> {
+    value.map_or(Ok(download.video_quality), |value| {
+        value
+            .parse()
+            .with_context(|| format!("invalid video quality `{value}`"))
+    })
+}
+
+fn default_download_root() -> Option<PathBuf> {
+    UserDirs::new().and_then(|dirs| {
+        dirs.audio_dir()
+            .map(Path::to_path_buf)
+            .or_else(|| Some(dirs.home_dir().join("Music")))
+    })
 }
 
 fn print_grouped_entity(
@@ -497,4 +1077,3 @@ fn cache_file(options: &SharedOptions) -> Result<PathBuf> {
 fn project_dirs() -> Option<ProjectDirs> {
     ProjectDirs::from("dev", "riptide", "riptide-rs")
 }
-

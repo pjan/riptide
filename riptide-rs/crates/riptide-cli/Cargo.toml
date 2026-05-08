@@ -10,14 +10,16 @@ clap.workspace = true
 directories.workspace = true
 riptide-config = { path = "../riptide-config" }
 riptide-core = { path = "../riptide-core" }
+riptide-media = { path = "../riptide-media" }
+riptide-metadata = { path = "../riptide-metadata" }
 riptide-provider-tidal = { path = "../riptide-provider-tidal" }
 riptide-template = { path = "../riptide-template" }
+tempfile.workspace = true
 tokio.workspace = true
 time.workspace = true
 url.workspace = true
 
 [dev-dependencies]
-tempfile.workspace = true
 
 [lints]
 workspace = true

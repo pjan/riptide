@@ -7,11 +7,13 @@ pub mod auth;
 pub mod cache;
 pub mod client;
 pub(crate) mod convert;
+pub mod cover;
 pub mod error;
 mod http;
 pub(crate) mod model;
 pub mod provider;
 pub mod resource;
+pub mod stream;
 
 pub use auth::{
     AccessToken, CountryCode, DeviceAuthorization, DeviceCode, FileTokenStore, PollingInterval,
@@ -20,9 +22,11 @@ pub use auth::{
 };
 pub use cache::{ApiCache, ApiCachePolicy, CacheEntryToWrite, CacheKey, RedbApiCache};
 pub use client::{SearchResults, TidalClient};
+pub use cover::{cover_url, CoverArtSize};
 pub use error::{TidalError, TidalResult};
 pub use provider::TidalProvider;
 pub use resource::TidalResource;
+pub use stream::{audio_quality_request_label, video_quality_request_label};
 
 /// HTTP client type used by TIDAL API and auth clients.
 pub type HttpClient = reqwest::Client;

@@ -96,12 +96,14 @@ fn resolve_field<'a>(
             .item()
             .map(|item| item.field(field.field.as_str()))
             .ok_or(TemplateError::MissingContext { namespace: "item" }),
-        TemplateNamespace::Album => Ok(context
-            .album()
-            .map_or(TemplateValue::None, |album| album.field(field.field.as_str(), context.effective_quality()))),
-        TemplateNamespace::Playlist => Ok(context
-            .playlist()
-            .map_or(TemplateValue::None, |playlist| playlist.field(field.field.as_str()))),
+        TemplateNamespace::Album => Ok(context.album().map_or(TemplateValue::None, |album| {
+            album.field(field.field.as_str(), context.effective_quality())
+        })),
+        TemplateNamespace::Playlist => {
+            Ok(context.playlist().map_or(TemplateValue::None, |playlist| {
+                playlist.field(field.field.as_str())
+            }))
+        }
     }
 }
 
@@ -210,7 +212,11 @@ fn render_explicit(
     Ok(output)
 }
 
-fn render_conditional(field: &str, value: &TemplateValue<'_>, text: &str) -> TemplateResult<String> {
+fn render_conditional(
+    field: &str,
+    value: &TemplateValue<'_>,
+    text: &str,
+) -> TemplateResult<String> {
     let TemplateValue::Conditional(value) = *value else {
         return Err(type_mismatch(field, "conditional", value));
     };

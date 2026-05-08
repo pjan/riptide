@@ -14,8 +14,8 @@ pub use catalog::{
 };
 pub use error::{CoreError, CoreResult, ProviderErrorKind};
 pub use id::{
-    Codec, ProviderContainerLabel, ProviderExternalIdKind, ProviderId, ProviderQualityLabel,
-    ResourceId,
+    Codec, CoverArtId, ProviderContainerLabel, ProviderExternalIdKind, ProviderId,
+    ProviderQualityLabel, ResourceId,
 };
 pub use metrics::{
     BitDepth, ConcurrencyLimit, DiscNumber, ItemCount, MediaDuration, SampleRateHz, TrackNumber,
@@ -29,7 +29,8 @@ pub use quality::{
     VideoQualityRequest,
 };
 pub use stream::{
-    ContainerKind, Lyrics, LyricsSource, LyricsSourceName, Manifest, PostProcessStep, StreamVariant,
+    ContainerExtension, ContainerKind, Lyrics, LyricsSource, LyricsSourceName, Manifest,
+    PostProcessStep, StreamVariant,
 };
 
 pub use id::{MediaRef, ResourceKind};

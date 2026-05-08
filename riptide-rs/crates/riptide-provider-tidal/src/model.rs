@@ -1,6 +1,7 @@
 //! TIDAL JSON response models.
 
 use serde::Deserialize;
+use url::Url;
 
 /// TIDAL artist role from the API.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -49,6 +50,23 @@ pub enum TidalTopHitKind {
     Other,
 }
 
+/// TIDAL stream manifest MIME discriminator.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+pub enum TidalManifestMime {
+    /// TIDAL BTS JSON manifest.
+    #[serde(rename = "application/vnd.tidal.bts")]
+    Bts,
+    /// DASH MPD XML manifest.
+    #[serde(rename = "application/dash+xml")]
+    Dash,
+    /// Apple HLS playlist.
+    #[serde(rename = "application/vnd.apple.mpegurl")]
+    Hls,
+    /// Other or currently unsupported MIME.
+    #[serde(other)]
+    Other,
+}
+
 /// TIDAL session response.
 #[derive(Debug, Clone, Deserialize)]
 pub struct SessionResponse {
@@ -87,6 +105,9 @@ pub struct TidalAlbumSummary {
     pub id: Option<i64>,
     /// Album title.
     pub title: Option<String>,
+    /// Cover art ID.
+    #[serde(default)]
+    pub cover: Option<String>,
 }
 
 /// TIDAL track.
@@ -187,6 +208,9 @@ pub struct TidalAlbum {
     /// Explicit flag.
     #[serde(default)]
     pub explicit: Option<bool>,
+    /// Cover art ID.
+    #[serde(default)]
+    pub cover: Option<String>,
     /// Release type.
     #[serde(default, rename = "type")]
     pub release_type: Option<String>,
@@ -293,4 +317,42 @@ pub struct TidalLyrics {
     /// Provider attribution.
     #[serde(default, rename = "lyricsProvider")]
     pub lyrics_provider: Option<String>,
+}
+
+/// TIDAL raw stream API response.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TidalStreamResponse {
+    /// Base64-encoded manifest payload.
+    pub manifest: String,
+    /// Manifest MIME type.
+    pub manifest_mime_type: TidalManifestMime,
+    /// Audio quality label.
+    #[serde(default)]
+    pub audio_quality: Option<String>,
+}
+
+/// TIDAL raw video stream API response.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TidalVideoStreamResponse {
+    /// Base64-encoded manifest payload.
+    pub manifest: String,
+    /// Manifest MIME type.
+    pub manifest_mime_type: TidalManifestMime,
+    /// Video quality label.
+    #[serde(default)]
+    pub video_quality: Option<String>,
+}
+
+/// TIDAL BTS manifest.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BtsManifest {
+    /// Direct segment URLs.
+    #[serde(default)]
+    pub urls: Vec<Url>,
+    /// Codec label.
+    #[serde(default, alias = "codecs")]
+    pub codec: Option<String>,
 }

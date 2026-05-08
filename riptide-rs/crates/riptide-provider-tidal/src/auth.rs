@@ -367,7 +367,11 @@ pub struct TidalAuthClient {
 
 impl TidalAuthClient {
     /// Creates an auth client.
-    pub const fn new(client: reqwest::Client, base_url: Url, credentials: TidalCredentials) -> Self {
+    pub const fn new(
+        client: reqwest::Client,
+        base_url: Url,
+        credentials: TidalCredentials,
+    ) -> Self {
         Self {
             client,
             base_url,

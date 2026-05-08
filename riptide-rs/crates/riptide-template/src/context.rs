@@ -354,14 +354,10 @@ impl AlbumTemplateInput {
             "title" => TemplateValue::Text(Cow::Borrowed(&self.title)),
             "artist" => TemplateValue::Text(Cow::Borrowed(&self.artist)),
             "artists" => TemplateValue::Text(Cow::Borrowed(&self.artists)),
-            "date" => self
-                .date
-                .map_or(TemplateValue::None, TemplateValue::Date),
+            "date" => self.date.map_or(TemplateValue::None, TemplateValue::Date),
             "explicit" => TemplateValue::Explicit(self.explicit),
             "master" => TemplateValue::Conditional(
-                self.master
-                    && effective_quality
-                        .is_some_and(|label| label.as_str() == "MAX"),
+                self.master && effective_quality.is_some_and(|label| label.as_str() == "MAX"),
             ),
             "release" => TemplateValue::Text(Cow::Borrowed(&self.release)),
             _ => TemplateValue::None,

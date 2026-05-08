@@ -70,12 +70,11 @@ mod tests {
 
     #[test]
     fn parses_path_style_input() -> TidalResult<()> {
-        let resource = TidalResource::parse("track/12345")?.ok_or_else(|| {
-            TidalError::InvalidValue {
+        let resource =
+            TidalResource::parse("track/12345")?.ok_or_else(|| TidalError::InvalidValue {
                 field: "test",
                 message: "expected Some".to_owned(),
-            }
-        })?;
+            })?;
         assert_eq!(resource.kind, ResourceKind::Track);
         assert_eq!(resource.id.as_str(), "12345");
         Ok(())
@@ -92,12 +91,11 @@ mod tests {
             ("mixes/6", ResourceKind::Mix),
         ];
         for (input, expected_kind) in cases {
-            let resource = TidalResource::parse(input)?.ok_or_else(|| {
-                TidalError::InvalidValue {
+            let resource =
+                TidalResource::parse(input)?.ok_or_else(|| TidalError::InvalidValue {
                     field: "test",
                     message: format!("expected Some for {input}"),
-                }
-            })?;
+                })?;
             assert_eq!(resource.kind, expected_kind);
         }
         Ok(())
@@ -105,12 +103,11 @@ mod tests {
 
     #[test]
     fn trims_leading_and_trailing_slashes() -> TidalResult<()> {
-        let resource = TidalResource::parse("/track/12345/")?.ok_or_else(|| {
-            TidalError::InvalidValue {
+        let resource =
+            TidalResource::parse("/track/12345/")?.ok_or_else(|| TidalError::InvalidValue {
                 field: "test",
                 message: "expected Some".to_owned(),
-            }
-        })?;
+            })?;
         assert_eq!(resource.kind, ResourceKind::Track);
         assert_eq!(resource.id.as_str(), "12345");
         Ok(())
@@ -136,12 +133,11 @@ mod tests {
 
     #[test]
     fn media_ref_produces_tidal_provider() -> TidalResult<()> {
-        let resource = TidalResource::parse("track/99")?.ok_or_else(|| {
-            TidalError::InvalidValue {
+        let resource =
+            TidalResource::parse("track/99")?.ok_or_else(|| TidalError::InvalidValue {
                 field: "test",
                 message: "expected Some".to_owned(),
-            }
-        })?;
+            })?;
         let reference = resource.media_ref()?;
         assert_eq!(reference.provider.as_str(), "tidal");
         assert_eq!(reference.kind, ResourceKind::Track);
