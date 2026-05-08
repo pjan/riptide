@@ -410,9 +410,27 @@ slice's config. Define `ConcurrencyLimit` in `riptide-core`, but expose
 concurrency config only in the later slice that wires runtime concurrency
 behavior.
 
-Use tier-based video quality names in Rust config: `low`, `medium`, `high`, and
-`best`. The Python value `fhd` maps conceptually to `high`; if `fhd` appears in
-Rust config, validation should fail with migration guidance to use `high`.
+Use Rust quality names in config:
+
+- audio: `low`, `high`, `lossless`, `hi_res_lossless`, and `best`
+- video: `low`, `medium`, `high`, and `best`
+
+Python quality strings from `riptide/core/utils/const.py` should fail with
+actionable migration guidance:
+
+- `download.track_quality = "normal"` -> use `"high"` in Rust, matching
+  Python's `normal -> HIGH`
+- `download.track_quality = "high"` remains accepted in Rust but means the
+  Rust tier named `high`; Python users who intended Python `high -> LOSSLESS`
+  should migrate to `"lossless"` explicitly
+- `download.track_quality = "max"` -> use `"hi_res_lossless"` in Rust, matching
+  Python's `max -> HI_RES_LOSSLESS`
+- `download.video_quality = "sd"` -> use `"low"` in Rust
+- `download.video_quality = "hd"` -> use `"medium"` in Rust
+- `download.video_quality = "fhd"` -> use `"high"` in Rust
+
+Because Python and Rust both use the string `"high"` but with different
+semantics, generated migration docs should call out this semantic difference.
 
 #### Raw to Validated
 
@@ -481,6 +499,14 @@ Validation:
   schema:
   - `[download].video_quality = "fhd"` should fail with `use "high" instead of
     "fhd"`.
+  - `[download].video_quality = "sd"` should fail with `use "low" instead of
+    "sd"`.
+  - `[download].video_quality = "hd"` should fail with `use "medium" instead
+    of "hd"`.
+  - `[download].track_quality = "normal"` should fail with `use "high" instead
+    of "normal"`.
+  - `[download].track_quality = "max"` should fail with `use
+    "hi_res_lossless" instead of "max"`.
   - `[download].threads_count` should fail with `concurrency is not implemented
     yet; remove threads_count until the download slice wires it`.
   - Root `enable_cache` and `debug` should fail with `not implemented in this
