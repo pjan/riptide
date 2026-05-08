@@ -176,9 +176,21 @@ pub struct ResourceId(String);
 pub struct Codec(String);
 pub struct ProviderQualityLabel(String);
 pub struct ProviderContainerLabel(String);
+pub struct ProviderExternalIdKind(String);
 pub struct BitDepth(u32);
 pub struct SampleRateHz(u32);
 pub struct ConcurrencyLimit(NonZeroUsize);
+pub struct TrackNumber(u32);
+pub struct DiscNumber(u32);
+pub struct ItemCount(u32);
+pub struct ExternalIds(BTreeMap<ExternalIdKind, String>);
+pub struct ProviderExtras(serde_json::Value);
+
+pub enum ExternalIdKind {
+    Isrc,
+    Upc,
+    ProviderSpecific(ProviderExternalIdKind),
+}
 
 pub struct MediaRef {
     pub provider: ProviderId,
@@ -196,9 +208,70 @@ pub enum ResourceKind {
 }
 ```
 
+`ProviderExtras` is the typed escape hatch for provider-specific response
+fragments. It should not be used when a field has stable cross-provider
+semantics.
+
 Provider-neutral catalog entities:
 
 ```rust
+pub struct ArtistCredit {
+    pub artist: Artist,
+    pub role: ArtistRole,
+}
+
+pub struct AlbumSummary {
+    pub id: MediaRef,
+    pub title: String,
+    pub artists: Vec<ArtistCredit>,
+}
+
+pub struct Track {
+    pub id: MediaRef,
+    pub title: String,
+    pub artists: Vec<ArtistCredit>,
+    pub album: Option<AlbumSummary>,
+    pub duration: Option<Duration>,
+    pub track_number: Option<TrackNumber>,
+    pub disc_number: Option<DiscNumber>,
+    pub explicit: Option<bool>,
+    pub external_ids: ExternalIds,
+    pub extras: ProviderExtras,
+}
+
+pub struct Video {
+    pub id: MediaRef,
+    pub title: String,
+    pub artists: Vec<ArtistCredit>,
+    pub album: Option<AlbumSummary>,
+    pub duration: Option<Duration>,
+    pub track_number: Option<TrackNumber>,
+    pub disc_number: Option<DiscNumber>,
+    pub explicit: Option<bool>,
+    pub extras: ProviderExtras,
+}
+
+pub struct Album {
+    pub id: MediaRef,
+    pub title: String,
+    pub artists: Vec<ArtistCredit>,
+    pub release_date: Option<Date>,
+    pub track_count: Option<ItemCount>,
+    pub video_count: Option<ItemCount>,
+    pub explicit: Option<bool>,
+    pub extras: ProviderExtras,
+}
+
+pub struct Playlist {
+    pub id: MediaRef,
+    pub title: String,
+    pub owner: Option<String>,
+    pub item_count: Option<ItemCount>,
+    pub created_at: Option<DateTime>,
+    pub updated_at: Option<DateTime>,
+    pub extras: ProviderExtras,
+}
+
 pub struct Artist {
     pub id: Option<MediaRef>,
     pub name: String,
@@ -220,7 +293,7 @@ pub struct Collection {
 }
 
 pub enum CollectionKind {
-    AlbumLike,
+    AlbumFormat,
     Playlist,
     Mix,
     ArtistDiscography,
@@ -238,10 +311,19 @@ pub enum CatalogEntity {
 }
 ```
 
+These entity structs are candidate shapes for Slice 1, not a final field lock.
+Slice 1 should define the minimal public fields needed by later slices and leave
+provider-specific response details in `ProviderExtras`.
+
+`Artist.id` is optional because credits-only contributors may have a display
+name but no provider-resolvable artist reference.
+
 `Collection` is a generic ordered container used when a provider has a group of
-items that is not semantically identical to a playlist or album. A TIDAL mix can
-normalize to `CollectionKind::Mix`. A future local folder can normalize to
-`CollectionKind::LocalFolder`.
+items that is not semantically identical to a playlist or album.
+`CollectionKind::AlbumFormat` represents an album-format container such as an
+album, EP, single, or compilation when a provider returns it through a generic
+collection path. A TIDAL mix can normalize to `CollectionKind::Mix`. A future
+local folder can normalize to `CollectionKind::LocalFolder`.
 
 "Download artist" means expanding an `Artist` into provider-selected child
 collections according to typed command/config filters. For TIDAL parity this
@@ -328,11 +410,25 @@ pub struct StreamVariant {
     pub sample_rate: Option<SampleRateHz>,
     pub manifest: Manifest,
 }
+
+pub struct Lyrics {
+    pub text: Option<String>,
+    pub synchronized_lrc: Option<String>,
+    pub provider: Option<String>,
+}
+
+pub enum PostProcessStep {
+    ExtractFlac,
+    RemuxToMp4,
+    RemoveSource,
+}
 ```
 
 `Manifest` describes media acquisition inputs after provider-specific response
 wrappers have been decoded. TIDAL BTS JSON is not a core manifest format; it is
 decoded by `riptide-provider-tidal` into one of these provider-neutral variants.
+`PostProcessStep` is intentionally narrow at first because the Python parity
+steps are ffmpeg-based FLAC extraction and video remuxing.
 
 Provider-neutral capability traits also live in this crate. Use `async-trait`
 for the first implementation because the registry needs trait objects. Revisit
@@ -385,6 +481,13 @@ pub struct ProviderCapabilities {
 If a provider does not support a capability, its implementation should return a
 typed `UnsupportedCapability` error. Optional capability routing can be
 introduced later if this single supertrait becomes too restrictive.
+
+This supertrait is an intentional first-phase simplification for TIDAL parity,
+not the final extension model. Slice 8 must review whether to keep this shape or
+split the registry by capability, for example separate maps for
+`Arc<dyn Resolver>`, `Arc<dyn StreamProvider>`, and local-library scanner/tagger
+capabilities. That review is required before adding providers that are not
+catalog-plus-stream services.
 
 Use layered models:
 
@@ -600,6 +703,11 @@ such as URL lists, M3U playlists, JSON manifests, or future provider migration
 exports. It should reuse provider resolution and collection expansion instead
 of maintaining separate traversal logic.
 
+M3U writing has two entry points that share the same writer from
+`riptide-metadata`: `DownloadService` may emit an M3U alongside downloaded files
+as a configured side effect, while `ExportService` may generate an M3U without
+downloading media.
+
 `DownloadService` owns orchestration:
 
 ```text
@@ -615,7 +723,7 @@ input
   -> media downloader
   -> ffmpeg post-process
   -> metadata writer
-  -> m3u/export/cover side effects
+  -> m3u/cover side effects
 ```
 
 ## Provider Registry
@@ -741,7 +849,9 @@ Tests/checks:
 
 Deliverables:
 
-- `riptide-core` typed IDs, qualities, resource kinds, errors.
+- `riptide-core` typed IDs, qualities, resource kinds, candidate catalog
+  entities, provider-neutral capability traits, provider registry shape, and
+  errors.
 - `riptide-config` raw and validated config.
 - Migration errors for known legacy/unwanted keys.
 
@@ -865,6 +975,9 @@ Deliverables:
 
 - Provider registry.
 - Capability introspection.
+- Decision on whether the first-phase `Provider` supertrait should remain or be
+  replaced by capability-specific registries before non-streaming providers are
+  added.
 - `tidal:` canonical refs.
 - Initial local provider design document. This deliverable is a plan, not a
   local provider implementation.
@@ -887,6 +1000,7 @@ These should be resolved before the linked slice plan is approved.
 | Whether `lofty` is sufficient for all metadata tags. | Slice 5 |
 | Whether listener mode remains an in-memory queue with single-resource sequential processing and per-resource track concurrency, matching current behavior, or becomes a more general scheduler. Persistent queues are out of scope unless this decision changes. | Slice 7 |
 | What canonical provider reference syntax should be: `tidal:track:123`, `tidal://track/123`, or both. | Slice 8 |
+| Whether the first-phase `Provider` supertrait remains acceptable or must be replaced by capability-specific registries before local/import-only providers are added. | Slice 8 |
 | How much local-library scanning belongs in the initial architecture versus a later provider slice. | Slice 8 |
 
 ## Review Checklist
