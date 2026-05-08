@@ -142,7 +142,7 @@ impl QualityParseError {
     }
 
     /// Returns a human-readable list of expected values.
-    pub fn expected(&self) -> &'static str {
+    pub const fn expected(&self) -> &'static str {
         self.expected
     }
 }

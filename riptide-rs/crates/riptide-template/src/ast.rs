@@ -167,7 +167,7 @@ pub struct ExplicitFormat {
 }
 
 /// Runtime template value.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TemplateValue<'a> {
     /// Text value.
     Text(Cow<'a, str>),
@@ -187,7 +187,7 @@ pub enum TemplateValue<'a> {
 
 impl TemplateValue<'_> {
     /// Returns a short kind label for diagnostics.
-    pub fn kind(&self) -> &'static str {
+    pub const fn kind(&self) -> &'static str {
         match self {
             Self::Text(_) => "text",
             Self::Integer(_) => "integer",

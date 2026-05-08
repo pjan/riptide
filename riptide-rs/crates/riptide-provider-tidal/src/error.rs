@@ -1,6 +1,7 @@
 //! TIDAL provider errors.
 
-use riptide_core::{CoreError, ProviderErrorKind, ProviderId};
+use crate::TIDAL_PROVIDER_ID;
+use riptide_core::{CoreError, ProviderErrorKind};
 use thiserror::Error;
 
 /// Convenient result alias for TIDAL operations.
@@ -66,7 +67,7 @@ pub enum TidalError {
         operation: String,
         /// Source error.
         #[source]
-        source: Box<TidalError>,
+        source: Box<Self>,
     },
 
     /// Cache file could not be opened or used.
@@ -109,6 +110,18 @@ pub enum TidalError {
         /// Capability.
         capability: &'static str,
     },
+
+    /// OAuth device authorization is still pending user approval.
+    #[error("authorization pending")]
+    AuthorizationPending,
+
+    /// OAuth server requested slower polling.
+    #[error("slow down")]
+    SlowDown,
+
+    /// OAuth device code has expired.
+    #[error("authorization expired")]
+    ExpiredToken,
 }
 
 impl TidalError {
@@ -125,6 +138,9 @@ impl TidalError {
                 ProviderErrorKind::InvalidResponse
             }
             Self::UnsupportedCapability { .. } => ProviderErrorKind::UnsupportedCapability,
+            Self::AuthorizationPending | Self::SlowDown | Self::ExpiredToken => {
+                ProviderErrorKind::Authentication
+            }
             Self::Http { .. }
             | Self::HttpClient { .. }
             | Self::CacheUnavailable { .. }
@@ -133,16 +149,9 @@ impl TidalError {
             | Self::Api { .. } => ProviderErrorKind::Unavailable,
         };
         CoreError::Provider {
-            provider: ProviderId::new("tidal").unwrap_or_else(|_| unreachable_provider_id()),
+            provider: TIDAL_PROVIDER_ID.clone(),
             kind,
             source: Box::new(self),
         }
-    }
-}
-
-fn unreachable_provider_id() -> ProviderId {
-    match ProviderId::new("tidal") {
-        Ok(id) => id,
-        Err(_) => unreachable!("literal provider ID is valid"),
     }
 }

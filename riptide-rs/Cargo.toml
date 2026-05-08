@@ -17,6 +17,7 @@ version = "0.1.0"
 anyhow = "1.0"
 async-trait = "0.1"
 base64 = "0.22"
+bitflags = "2"
 clap = { version = "4", features = ["derive"] }
 directories = "6"
 redb = "4.1"
@@ -34,7 +35,15 @@ url = { version = "2", features = ["serde"] }
 missing_docs = "warn"
 
 [workspace.lints.clippy]
+pedantic = { level = "warn", priority = -1 }
+nursery = { level = "warn", priority = -1 }
 unwrap_used = "deny"
 expect_used = "deny"
 dbg_macro = "deny"
 todo = "deny"
+# pedantic overrides — too noisy or not applicable
+module_name_repetitions = "allow"
+must_use_candidate = "allow"
+missing_errors_doc = "allow"
+missing_panics_doc = "allow"
+return_self_not_must_use = "allow"

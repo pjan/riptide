@@ -1,24 +1,20 @@
 //! TIDAL model conversion into provider-neutral core types.
 
-use crate::{model::*, CountryCode, TidalError, TidalResult};
+use crate::{
+    model::{TidalArtistRole, TidalMediaTag, TidalTopHitKind, TidalTrack, TidalVideo, TidalAlbum, TidalPlaylist, TidalLyrics, TidalArtist},
+    CountryCode, TidalError, TidalResult, TIDAL_PROVIDER_ID,
+};
 use riptide_core::{
     Album, AlbumSummary, Artist, ArtistCredit, ArtistRole, AudioQuality, CatalogEntity,
     ExternalIdKind, ExternalIds, ItemCount, Lyrics, LyricsSource, LyricsSourceName, MediaDuration,
-    MediaRef, Playlist, ProviderExtras, ProviderId, ProviderQualityLabel, ResourceId, ResourceKind,
-    Track, TrackNumber, Video, VideoQuality,
+    MediaRef, Playlist, ProviderQualityLabel, ResourceId, ResourceKind, Track, TrackNumber, Video,
+    VideoQuality,
 };
 use std::collections::BTreeMap;
 
-fn tidal_provider() -> ProviderId {
-    match ProviderId::new("tidal") {
-        Ok(id) => id,
-        Err(_) => unreachable!("literal provider ID is valid"),
-    }
-}
-
-fn media_ref(kind: ResourceKind, id: impl ToString) -> TidalResult<MediaRef> {
+fn media_ref(kind: ResourceKind, id: &impl ToString) -> TidalResult<MediaRef> {
     Ok(MediaRef::new(
-        tidal_provider(),
+        TIDAL_PROVIDER_ID.clone(),
         kind,
         ResourceId::new(id.to_string()).map_err(|error| TidalError::InvalidResponse {
             field: "id".to_owned(),
@@ -33,31 +29,8 @@ pub fn track(track: TidalTrack) -> TidalResult<Track> {
     if let Some(isrc) = track.isrc.clone() {
         external.insert(ExternalIdKind::Isrc, isrc);
     }
-    let mut extras = serde_json::Map::new();
-    if let Some(version) = track.version {
-        extras.insert("version".to_owned(), serde_json::Value::String(version));
-    }
-    if let Some(copyright) = track.copyright {
-        extras.insert("copyright".to_owned(), serde_json::Value::String(copyright));
-    }
-    if let Some(bpm) = track.bpm {
-        extras.insert("bpm".to_owned(), serde_json::Value::Number(bpm.into()));
-    }
-    if let Some(quality) = track.audio_quality.clone() {
-        extras.insert("quality".to_owned(), serde_json::Value::String(quality));
-    }
-    extras.insert(
-        "dolby".to_owned(),
-        serde_json::Value::Bool(
-            track
-                .media_metadata
-                .tags
-                .iter()
-                .any(|tag| tag == "DOLBY_ATMOS"),
-        ),
-    );
     Ok(Track {
-        id: media_ref(ResourceKind::Track, track.id)?,
+        id: media_ref(ResourceKind::Track, &track.id)?,
         title: track.title,
         artists: artists(track.artist, track.artists)?,
         album: track
@@ -65,7 +38,7 @@ pub fn track(track: TidalTrack) -> TidalResult<Track> {
             .and_then(|album| album.id.zip(album.title))
             .map(|(id, title)| {
                 Ok(AlbumSummary {
-                    id: media_ref(ResourceKind::Album, id)?,
+                    id: media_ref(ResourceKind::Album, &id)?,
                     title,
                     artists: Vec::new(),
                 })
@@ -90,18 +63,18 @@ pub fn track(track: TidalTrack) -> TidalResult<Track> {
             })?,
         explicit: track.explicit,
         external_ids: ExternalIds(external),
-        extras: ProviderExtras(serde_json::Value::Object(extras)),
+        version: track.version,
+        copyright: track.copyright,
+        bpm: track.bpm,
+        quality_label: track.audio_quality,
+        dolby_atmos: track.media_metadata.tags.contains(&TidalMediaTag::DolbyAtmos),
     })
 }
 
 /// Converts a TIDAL video.
 pub fn video(video: TidalVideo) -> TidalResult<Video> {
-    let mut extras = serde_json::Map::new();
-    if let Some(quality) = video.quality {
-        extras.insert("quality".to_owned(), serde_json::Value::String(quality));
-    }
     Ok(Video {
-        id: media_ref(ResourceKind::Video, video.id)?,
+        id: media_ref(ResourceKind::Video, &video.id)?,
         title: video.title,
         artists: artists(video.artist, video.artists)?,
         album: video
@@ -109,7 +82,7 @@ pub fn video(video: TidalVideo) -> TidalResult<Video> {
             .and_then(|album| album.id.zip(album.title))
             .map(|(id, title)| {
                 Ok(AlbumSummary {
-                    id: media_ref(ResourceKind::Album, id)?,
+                    id: media_ref(ResourceKind::Album, &id)?,
                     title,
                     artists: Vec::new(),
                 })
@@ -133,31 +106,17 @@ pub fn video(video: TidalVideo) -> TidalResult<Video> {
                 message: error.to_string(),
             })?,
         explicit: video.explicit,
-        extras: ProviderExtras(serde_json::Value::Object(extras)),
+        quality_label: video.quality,
     })
 }
 
 /// Converts a TIDAL album.
 pub fn album(album: TidalAlbum) -> TidalResult<Album> {
-    let mut extras = serde_json::Map::new();
-    if let Some(release) = album.release_type {
-        extras.insert("release".to_owned(), serde_json::Value::String(release));
-    }
-    extras.insert(
-        "hires_lossless".to_owned(),
-        serde_json::Value::Bool(
-            album
-                .media_metadata
-                .tags
-                .iter()
-                .any(|tag| tag == "HIRES_LOSSLESS"),
-        ),
-    );
     Ok(Album {
-        id: media_ref(ResourceKind::Album, album.id)?,
+        id: media_ref(ResourceKind::Album, &album.id)?,
         title: album.title,
         artists: artists(album.artist, album.artists)?,
-        release_date: album.release_date.map(parse_date).transpose()?,
+        release_date: album.release_date.as_deref().map(parse_date).transpose()?,
         track_count: album
             .number_of_tracks
             .map(ItemCount::new)
@@ -175,7 +134,8 @@ pub fn album(album: TidalAlbum) -> TidalResult<Album> {
                 message: error.to_string(),
             })?,
         explicit: album.explicit,
-        extras: ProviderExtras(serde_json::Value::Object(extras)),
+        release_type: album.release_type,
+        hires_lossless: album.media_metadata.tags.contains(&TidalMediaTag::HiResLossless),
     })
 }
 
@@ -186,7 +146,7 @@ pub fn playlist(playlist: TidalPlaylist) -> TidalResult<Playlist> {
         .unwrap_or(0)
         .saturating_add(playlist.number_of_videos.unwrap_or(0));
     Ok(Playlist {
-        id: media_ref(ResourceKind::Playlist, playlist.uuid.clone())?,
+        id: media_ref(ResourceKind::Playlist, &playlist.uuid)?,
         title: playlist.title,
         owner: None,
         item_count: if item_count == 0 {
@@ -199,9 +159,8 @@ pub fn playlist(playlist: TidalPlaylist) -> TidalResult<Playlist> {
                 })?,
             )
         },
-        created_at: playlist.created.map(parse_datetime).transpose()?,
-        updated_at: playlist.last_updated.map(parse_datetime).transpose()?,
-        extras: ProviderExtras::default(),
+        created_at: playlist.created.as_deref().map(parse_datetime).transpose()?,
+        updated_at: playlist.last_updated.as_deref().map(parse_datetime).transpose()?,
     })
 }
 
@@ -223,6 +182,7 @@ pub fn lyrics(lyrics: TidalLyrics) -> TidalResult<Lyrics> {
 }
 
 /// Maps an audio quality label.
+#[allow(dead_code)]
 pub fn audio_quality(label: &str) -> TidalResult<AudioQuality> {
     Ok(match label {
         "LOW" => AudioQuality::Low,
@@ -241,6 +201,7 @@ pub fn audio_quality(label: &str) -> TidalResult<AudioQuality> {
 }
 
 /// Maps a video quality label.
+#[allow(dead_code)]
 pub fn video_quality(label: &str) -> TidalResult<VideoQuality> {
     Ok(match label {
         "LOW" => VideoQuality::Low,
@@ -258,6 +219,7 @@ pub fn video_quality(label: &str) -> TidalResult<VideoQuality> {
 }
 
 /// Maps a session country code.
+#[allow(dead_code)]
 pub fn country_code(value: String) -> TidalResult<CountryCode> {
     CountryCode::new(value)
 }
@@ -278,14 +240,14 @@ fn artists(
                 artist: Artist {
                     id: artist
                         .id
-                        .map(|id| media_ref(ResourceKind::Artist, id))
+                        .map(|id| media_ref(ResourceKind::Artist, &id))
                         .transpose()?,
                     name: artist.name,
                 },
-                role: match artist.kind.as_deref() {
-                    Some("MAIN") => ArtistRole::Main,
-                    Some("FEATURED") => ArtistRole::Featured,
-                    Some(_) => ArtistRole::Contributor,
+                role: match artist.role {
+                    Some(TidalArtistRole::Main) => ArtistRole::Main,
+                    Some(TidalArtistRole::Featured) => ArtistRole::Featured,
+                    Some(TidalArtistRole::Other) => ArtistRole::Contributor,
                     None => ArtistRole::Unknown,
                 },
             })
@@ -293,8 +255,8 @@ fn artists(
         .collect()
 }
 
-fn parse_date(value: String) -> TidalResult<time::Date> {
-    time::Date::parse(&value, &time::format_description::well_known::Iso8601::DATE).map_err(
+fn parse_date(value: &str) -> TidalResult<time::Date> {
+    time::Date::parse(value, &time::format_description::well_known::Iso8601::DATE).map_err(
         |error| TidalError::InvalidResponse {
             field: "date".to_owned(),
             message: error.to_string(),
@@ -302,8 +264,8 @@ fn parse_date(value: String) -> TidalResult<time::Date> {
     )
 }
 
-fn parse_datetime(value: String) -> TidalResult<time::OffsetDateTime> {
-    time::OffsetDateTime::parse(&value, &time::format_description::well_known::Rfc3339).map_err(
+fn parse_datetime(value: &str) -> TidalResult<time::OffsetDateTime> {
+    time::OffsetDateTime::parse(value, &time::format_description::well_known::Rfc3339).map_err(
         |error| TidalError::InvalidResponse {
             field: "datetime".to_owned(),
             message: error.to_string(),
@@ -312,27 +274,267 @@ fn parse_datetime(value: String) -> TidalResult<time::OffsetDateTime> {
 }
 
 /// Converts a top-hit raw value.
-pub fn top_hit(kind: &str, value: serde_json::Value) -> TidalResult<Option<CatalogEntity>> {
+pub fn top_hit(
+    kind: &TidalTopHitKind,
+    value: serde_json::Value,
+) -> TidalResult<Option<CatalogEntity>> {
     match kind {
-        "TRACKS" => Ok(Some(CatalogEntity::Track(track(
+        TidalTopHitKind::Tracks => Ok(Some(CatalogEntity::Track(track(
             serde_json::from_value(value).map_err(|error| TidalError::InvalidResponse {
                 field: "topHit.track".to_owned(),
                 message: error.to_string(),
             })?,
         )?))),
-        "ALBUMS" => Ok(Some(CatalogEntity::Album(album(
+        TidalTopHitKind::Albums => Ok(Some(CatalogEntity::Album(album(
             serde_json::from_value(value).map_err(|error| TidalError::InvalidResponse {
                 field: "topHit.album".to_owned(),
                 message: error.to_string(),
             })?,
         )?))),
-        "PLAYLISTS" => Ok(Some(CatalogEntity::Playlist(playlist(
+        TidalTopHitKind::Playlists => Ok(Some(CatalogEntity::Playlist(playlist(
             serde_json::from_value(value).map_err(|error| TidalError::InvalidResponse {
                 field: "topHit.playlist".to_owned(),
                 message: error.to_string(),
             })?,
         )?))),
-        "ARTISTS" => Ok(None),
-        _ => Ok(None),
+        TidalTopHitKind::Artists | TidalTopHitKind::Other => Ok(None),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::model::{MediaMetadata, TidalAlbumSummary};
+
+    fn minimal_track() -> TidalTrack {
+        TidalTrack {
+            id: 1,
+            title: "Test Track".to_owned(),
+            duration: Some(300),
+            track_number: Some(3),
+            volume_number: Some(1),
+            version: Some("Radio Edit".to_owned()),
+            copyright: Some("2024 Label".to_owned()),
+            bpm: Some(120),
+            isrc: Some("USRC12345678".to_owned()),
+            explicit: Some(true),
+            audio_quality: Some("LOSSLESS".to_owned()),
+            artist: Some(TidalArtist {
+                id: Some(10),
+                name: "Main Artist".to_owned(),
+                role: Some(TidalArtistRole::Main),
+            }),
+            artists: vec![
+                TidalArtist {
+                    id: Some(10),
+                    name: "Main Artist".to_owned(),
+                    role: Some(TidalArtistRole::Main),
+                },
+                TidalArtist {
+                    id: Some(20),
+                    name: "Featured".to_owned(),
+                    role: Some(TidalArtistRole::Featured),
+                },
+            ],
+            album: Some(TidalAlbumSummary {
+                id: Some(100),
+                title: Some("Test Album".to_owned()),
+            }),
+            media_metadata: MediaMetadata {
+                tags: vec![TidalMediaTag::DolbyAtmos],
+            },
+        }
+    }
+
+    #[test]
+    fn track_converts_all_fields() -> TidalResult<()> {
+        let result = track(minimal_track())?;
+        assert_eq!(result.title, "Test Track");
+        assert_eq!(result.id.id.as_str(), "1");
+        assert_eq!(result.id.kind, ResourceKind::Track);
+        assert_eq!(result.duration.map(|d| d.as_duration().as_secs()), Some(300));
+        assert_eq!(result.track_number.map(TrackNumber::get), Some(3));
+        assert_eq!(result.disc_number.map(riptide_core::DiscNumber::get), Some(1));
+        assert_eq!(result.version.as_deref(), Some("Radio Edit"));
+        assert_eq!(result.copyright.as_deref(), Some("2024 Label"));
+        assert_eq!(result.bpm, Some(120));
+        assert_eq!(result.quality_label.as_deref(), Some("LOSSLESS"));
+        assert!(result.dolby_atmos);
+        assert_eq!(result.explicit, Some(true));
+        assert_eq!(
+            result.external_ids.0.get(&ExternalIdKind::Isrc),
+            Some(&"USRC12345678".to_owned())
+        );
+        assert!(result.album.is_some());
+        assert_eq!(result.artists.len(), 2);
+        assert_eq!(result.artists[0].role, ArtistRole::Main);
+        assert_eq!(result.artists[1].role, ArtistRole::Featured);
+        Ok(())
+    }
+
+    #[test]
+    fn track_with_missing_optional_fields() -> TidalResult<()> {
+        let tidal_track = TidalTrack {
+            id: 2,
+            title: "Minimal".to_owned(),
+            duration: None,
+            track_number: None,
+            volume_number: None,
+            version: None,
+            copyright: None,
+            bpm: None,
+            isrc: None,
+            explicit: None,
+            audio_quality: None,
+            artist: None,
+            artists: Vec::new(),
+            album: None,
+            media_metadata: MediaMetadata::default(),
+        };
+        let result = track(tidal_track)?;
+        assert_eq!(result.title, "Minimal");
+        assert!(result.duration.is_none());
+        assert!(result.track_number.is_none());
+        assert!(result.version.is_none());
+        assert!(result.bpm.is_none());
+        assert!(!result.dolby_atmos);
+        assert!(result.album.is_none());
+        assert!(result.artists.is_empty());
+        assert!(result.external_ids.0.is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn artist_role_mapping() -> TidalResult<()> {
+        let result = track(minimal_track())?;
+        assert_eq!(result.artists[0].role, ArtistRole::Main);
+        assert_eq!(result.artists[1].role, ArtistRole::Featured);
+
+        // Test unknown role
+        let tidal_track = TidalTrack {
+            artists: vec![TidalArtist {
+                id: Some(1),
+                name: "Other".to_owned(),
+                role: Some(TidalArtistRole::Other),
+            }],
+            ..minimal_track()
+        };
+        let result = track(tidal_track)?;
+        assert_eq!(result.artists[0].role, ArtistRole::Contributor);
+
+        // Test missing role
+        let tidal_track = TidalTrack {
+            artists: vec![TidalArtist {
+                id: Some(1),
+                name: "NoRole".to_owned(),
+                role: None,
+            }],
+            ..minimal_track()
+        };
+        let result = track(tidal_track)?;
+        assert_eq!(result.artists[0].role, ArtistRole::Unknown);
+        Ok(())
+    }
+
+    #[test]
+    fn primary_artist_fallback_when_artists_empty() -> TidalResult<()> {
+        let tidal_track = TidalTrack {
+            artists: Vec::new(),
+            artist: Some(TidalArtist {
+                id: Some(10),
+                name: "Solo".to_owned(),
+                role: Some(TidalArtistRole::Main),
+            }),
+            ..minimal_track()
+        };
+        let result = track(tidal_track)?;
+        assert_eq!(result.artists.len(), 1);
+        assert_eq!(result.artists[0].artist.name, "Solo");
+        Ok(())
+    }
+
+    #[test]
+    fn album_converts_with_hires_tag() -> TidalResult<()> {
+        let tidal_album = TidalAlbum {
+            id: 1,
+            title: "HiRes Album".to_owned(),
+            release_date: Some("2024-01-15".to_owned()),
+            number_of_tracks: Some(12),
+            number_of_videos: Some(2),
+            explicit: Some(false),
+            release_type: Some("ALBUM".to_owned()),
+            artist: None,
+            artists: Vec::new(),
+            media_metadata: MediaMetadata {
+                tags: vec![TidalMediaTag::HiResLossless],
+            },
+        };
+        let result = album(tidal_album)?;
+        assert_eq!(result.title, "HiRes Album");
+        assert!(result.hires_lossless);
+        assert_eq!(result.release_type.as_deref(), Some("ALBUM"));
+        assert_eq!(result.track_count.map(ItemCount::get), Some(12));
+        assert_eq!(result.video_count.map(ItemCount::get), Some(2));
+        assert!(result.release_date.is_some());
+        Ok(())
+    }
+
+    #[test]
+    fn playlist_converts_item_count() -> TidalResult<()> {
+        let tidal_playlist = TidalPlaylist {
+            uuid: "abc-123".to_owned(),
+            title: "My Playlist".to_owned(),
+            number_of_tracks: Some(10),
+            number_of_videos: Some(5),
+            created: Some("2024-01-15T12:00:00Z".to_owned()),
+            last_updated: None,
+        };
+        let result = playlist(tidal_playlist)?;
+        assert_eq!(result.title, "My Playlist");
+        assert_eq!(result.item_count.map(ItemCount::get), Some(15));
+        assert!(result.created_at.is_some());
+        assert!(result.updated_at.is_none());
+        Ok(())
+    }
+
+    #[test]
+    fn lyrics_converts_with_provider() -> TidalResult<()> {
+        let tidal_lyrics = TidalLyrics {
+            lyrics: Some("Hello world".to_owned()),
+            subtitles: Some("[00:01] Hello".to_owned()),
+            lyrics_provider: Some("Musixmatch".to_owned()),
+        };
+        let result = lyrics(tidal_lyrics)?;
+        assert_eq!(result.text.as_deref(), Some("Hello world"));
+        assert_eq!(result.synchronized_lrc.as_deref(), Some("[00:01] Hello"));
+        assert!(matches!(result.source, Some(LyricsSource::External(_))));
+        Ok(())
+    }
+
+    #[test]
+    fn audio_quality_maps_known_labels() -> TidalResult<()> {
+        assert_eq!(audio_quality("LOW")?, AudioQuality::Low);
+        assert_eq!(audio_quality("HIGH")?, AudioQuality::High);
+        assert_eq!(audio_quality("LOSSLESS")?, AudioQuality::Lossless);
+        assert_eq!(audio_quality("HI_RES")?, AudioQuality::HiResLossless);
+        assert_eq!(audio_quality("HI_RES_LOSSLESS")?, AudioQuality::HiResLossless);
+        assert!(matches!(audio_quality("UNKNOWN")?, AudioQuality::ProviderSpecific(_)));
+        Ok(())
+    }
+
+    #[test]
+    fn video_quality_maps_known_labels() -> TidalResult<()> {
+        assert_eq!(video_quality("LOW")?, VideoQuality::Low);
+        assert_eq!(video_quality("MEDIUM")?, VideoQuality::Medium);
+        assert_eq!(video_quality("HIGH")?, VideoQuality::High);
+        assert!(matches!(video_quality("4K")?, VideoQuality::ProviderSpecific(_)));
+        Ok(())
+    }
+
+    #[test]
+    fn top_hit_artists_returns_none() -> TidalResult<()> {
+        assert!(top_hit(&TidalTopHitKind::Artists, serde_json::Value::Null)?.is_none());
+        assert!(top_hit(&TidalTopHitKind::Other, serde_json::Value::Null)?.is_none());
+        Ok(())
     }
 }

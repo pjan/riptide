@@ -181,11 +181,11 @@ fn parse_format_for_field(
         | (TemplateNamespace::Playlist, "created" | "updated") => {
             parse_datetime_format(field, spec)
         }
-        (TemplateNamespace::Item, "explicit") | (TemplateNamespace::Album, "explicit") => {
+        (TemplateNamespace::Item | TemplateNamespace::Album, "explicit") => {
             parse_explicit_format(field, spec)
         }
         (TemplateNamespace::Item, "dolby") | (TemplateNamespace::Album, "master") => {
-            parse_conditional_format(field, spec)
+            Ok(spec.map(|spec| FormatSpec::ConditionalText(spec.to_owned())))
         }
         _ => {
             if let Some(spec) = spec {
@@ -211,11 +211,10 @@ fn parse_int_format(field: &str, spec: Option<&str>) -> TemplateResult<Option<Fo
             "integer format must end with `d`",
         ));
     };
-    let (fill, width) = if let Some(width) = width_part.strip_prefix('0') {
-        (IntFill::Zero, width)
-    } else {
-        (IntFill::Space, width_part)
-    };
+    let (fill, width) = width_part.strip_prefix('0').map_or_else(
+        || (IntFill::Space, width_part),
+        |width| (IntFill::Zero, width),
+    );
     if width.is_empty() || !width.bytes().all(|byte| byte.is_ascii_digit()) {
         return Err(invalid_spec(field, spec, "integer width must be numeric"));
     }
@@ -280,16 +279,6 @@ fn set_mode(
     }
     *current = Some(next);
     Ok(())
-}
-
-fn parse_conditional_format(
-    _field: &str,
-    spec: Option<&str>,
-) -> TemplateResult<Option<FormatSpec>> {
-    let Some(spec) = spec else {
-        return Ok(None);
-    };
-    Ok(Some(FormatSpec::ConditionalText(spec.to_owned())))
 }
 
 fn invalid_spec(field: &str, spec: &str, message: &str) -> TemplateError {

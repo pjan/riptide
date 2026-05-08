@@ -1,28 +1,13 @@
 //! Provider trait implementation for TIDAL.
 
 use crate::{
-    resource::TidalResource, TidalApiCache, TidalAuthClient, TidalClient, TidalError,
-    TidalTokenStore,
+    resource::TidalResource, TidalClient, TidalError, TIDAL_PROVIDER_ID,
 };
 use async_trait::async_trait;
 use riptide_core::{
     CatalogEntity, CollectionProvider, CoreError, CoreResult, Lyrics, LyricsProvider, MediaRef,
-    Provider, ProviderCapabilities, ProviderId, QualityRequest, Resolver, StreamProvider,
-    StreamVariant,
+    Provider, ProviderCapabilities, ProviderId, QualityRequest, Resolver, StreamProvider, StreamVariant,
 };
-
-/// TIDAL provider construction options.
-#[derive(Debug, Clone)]
-pub struct TidalProviderOptions {
-    /// Auth client.
-    pub auth_client: TidalAuthClient,
-    /// API client.
-    pub api_client: TidalClient,
-    /// Token store.
-    pub token_store: TidalTokenStore,
-    /// API cache.
-    pub cache: TidalApiCache,
-}
 
 /// TIDAL provider.
 #[derive(Debug, Clone)]
@@ -32,12 +17,12 @@ pub struct TidalProvider {
 }
 
 impl TidalProvider {
-    /// Creates a provider.
-    pub fn new(options: TidalProviderOptions) -> CoreResult<Self> {
-        Ok(Self {
-            id: ProviderId::new("tidal")?,
-            client: options.api_client,
-        })
+    /// Creates a provider wrapping a TIDAL API client.
+    pub fn new(client: TidalClient) -> Self {
+        Self {
+            id: TIDAL_PROVIDER_ID.clone(),
+            client,
+        }
     }
 }
 
@@ -126,12 +111,8 @@ impl Provider for TidalProvider {
     }
 
     fn capabilities(&self) -> ProviderCapabilities {
-        ProviderCapabilities {
-            resolve: true,
-            collections: true,
-            lyrics: true,
-            search: true,
-            ..ProviderCapabilities::default()
-        }
+        ProviderCapabilities::RESOLVE
+            | ProviderCapabilities::LYRICS
+            | ProviderCapabilities::SEARCH
     }
 }

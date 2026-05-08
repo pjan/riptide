@@ -10,7 +10,7 @@ fn config_check_succeeds_for_valid_fixture() -> Result<(), Box<dyn std::error::E
         &path,
         r#"
         [download]
-        track_quality = "high"
+        audio_quality = "high"
         video_quality = "high"
         skip_existing = true
 

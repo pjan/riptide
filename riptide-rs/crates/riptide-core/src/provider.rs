@@ -57,23 +57,25 @@ pub trait Provider:
     fn capabilities(&self) -> ProviderCapabilities;
 }
 
-/// Capability flags for a provider.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub struct ProviderCapabilities {
-    /// Can parse and resolve references.
-    pub resolve: bool,
-    /// Can list collection children.
-    pub collections: bool,
-    /// Can resolve streams.
-    pub streams: bool,
-    /// Can fetch lyrics.
-    pub lyrics: bool,
-    /// Can fetch artwork.
-    pub artwork: bool,
-    /// Can fetch credits.
-    pub credits: bool,
-    /// Can search catalog.
-    pub search: bool,
+bitflags::bitflags! {
+    /// Capability flags for a provider.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+    pub struct ProviderCapabilities: u8 {
+        /// Can parse and resolve references.
+        const RESOLVE = 1 << 0;
+        /// Can list collection children.
+        const COLLECTIONS = 1 << 1;
+        /// Can resolve streams.
+        const STREAMS = 1 << 2;
+        /// Can fetch lyrics.
+        const LYRICS = 1 << 3;
+        /// Can fetch artwork.
+        const ARTWORK = 1 << 4;
+        /// Can fetch credits.
+        const CREDITS = 1 << 5;
+        /// Can search catalog.
+        const SEARCH = 1 << 6;
+    }
 }
 
 /// In-process provider registry keyed by provider ID.
@@ -191,10 +193,7 @@ mod tests {
         }
 
         fn capabilities(&self) -> ProviderCapabilities {
-            ProviderCapabilities {
-                resolve: true,
-                ..ProviderCapabilities::default()
-            }
+            ProviderCapabilities::RESOLVE
         }
     }
 

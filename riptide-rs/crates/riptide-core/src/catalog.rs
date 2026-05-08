@@ -4,18 +4,6 @@ use crate::{DiscNumber, ItemCount, MediaDuration, MediaRef, ProviderExternalIdKi
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
-/// Provider-specific JSON response fragments without stable cross-provider meaning.
-///
-/// Pulling `serde_json` into core is intentional only for this escape hatch.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct ProviderExtras(pub serde_json::Value);
-
-impl Default for ProviderExtras {
-    fn default() -> Self {
-        Self(serde_json::Value::Null)
-    }
-}
-
 /// External identifier map.
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub struct ExternalIds(pub BTreeMap<ExternalIdKind, String>);
@@ -65,7 +53,7 @@ pub struct ArtistCredit {
 }
 
 /// Lightweight album reference on tracks and videos.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AlbumSummary {
     /// Provider-resolvable album reference.
     pub id: MediaRef,
@@ -76,7 +64,7 @@ pub struct AlbumSummary {
 }
 
 /// Provider-neutral track.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Track {
     /// Track reference.
     pub id: MediaRef,
@@ -96,12 +84,25 @@ pub struct Track {
     pub explicit: Option<bool>,
     /// External IDs.
     pub external_ids: ExternalIds,
-    /// Provider-specific extras.
-    pub extras: ProviderExtras,
+    /// Version/remix label.
+    #[serde(default)]
+    pub version: Option<String>,
+    /// Copyright notice.
+    #[serde(default)]
+    pub copyright: Option<String>,
+    /// Beats per minute.
+    #[serde(default)]
+    pub bpm: Option<i64>,
+    /// Provider quality label.
+    #[serde(default)]
+    pub quality_label: Option<String>,
+    /// Dolby Atmos flag.
+    #[serde(default)]
+    pub dolby_atmos: bool,
 }
 
 /// Provider-neutral video.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Video {
     /// Video reference.
     pub id: MediaRef,
@@ -119,12 +120,13 @@ pub struct Video {
     pub disc_number: Option<DiscNumber>,
     /// Explicit content flag.
     pub explicit: Option<bool>,
-    /// Provider-specific extras.
-    pub extras: ProviderExtras,
+    /// Provider quality label.
+    #[serde(default)]
+    pub quality_label: Option<String>,
 }
 
 /// Provider-neutral album.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Album {
     /// Album reference.
     pub id: MediaRef,
@@ -140,12 +142,16 @@ pub struct Album {
     pub video_count: Option<ItemCount>,
     /// Explicit content flag.
     pub explicit: Option<bool>,
-    /// Provider-specific extras.
-    pub extras: ProviderExtras,
+    /// Release type label.
+    #[serde(default)]
+    pub release_type: Option<String>,
+    /// High-resolution lossless flag.
+    #[serde(default)]
+    pub hires_lossless: bool,
 }
 
 /// Provider-neutral playlist.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Playlist {
     /// Playlist reference.
     pub id: MediaRef,
@@ -159,12 +165,10 @@ pub struct Playlist {
     pub created_at: Option<time::OffsetDateTime>,
     /// Last update timestamp.
     pub updated_at: Option<time::OffsetDateTime>,
-    /// Provider-specific extras.
-    pub extras: ProviderExtras,
 }
 
 /// Generic ordered provider collection.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Collection {
     /// Collection reference.
     pub id: MediaRef,
@@ -193,7 +197,7 @@ pub enum CollectionKind {
 }
 
 /// Any provider-neutral catalog entity.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum CatalogEntity {
     /// Track entity.
@@ -242,7 +246,6 @@ mod tests {
             item_count: None,
             created_at: None,
             updated_at: None,
-            extras: ProviderExtras::default(),
         };
 
         let entity = CatalogEntity::Playlist(playlist);
@@ -251,11 +254,24 @@ mod tests {
     }
 
     #[test]
-    fn provider_extras_round_trip_json() -> Result<(), Box<dyn std::error::Error>> {
-        let extras = ProviderExtras(serde_json::json!({ "tidal": { "tag": "HIRES" } }));
-        let json = serde_json::to_string(&extras)?;
-        let decoded: ProviderExtras = serde_json::from_str(&json)?;
-        assert_eq!(extras, decoded);
+    fn album_typed_fields_default_correctly() -> Result<(), Box<dyn std::error::Error>> {
+        let album = Album {
+            id: MediaRef::new(
+                crate::ProviderId::new("tidal")?,
+                crate::ResourceKind::Album,
+                crate::ResourceId::new("1")?,
+            ),
+            title: "Album".to_owned(),
+            artists: Vec::new(),
+            release_date: None,
+            track_count: None,
+            video_count: None,
+            explicit: None,
+            release_type: Some("ALBUM".to_owned()),
+            hires_lossless: true,
+        };
+        assert!(album.hires_lossless);
+        assert_eq!(album.release_type.as_deref(), Some("ALBUM"));
         Ok(())
     }
 }

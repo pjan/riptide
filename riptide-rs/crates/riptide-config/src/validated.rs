@@ -50,7 +50,7 @@ impl TryFrom<RawConfig> for ValidatedConfig {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DownloadConfig {
     /// Requested audio quality.
-    pub track_quality: AudioQualityRequest,
+    pub audio_quality: AudioQualityRequest,
     /// Requested video quality.
     pub video_quality: VideoQualityRequest,
     /// Skip existing files.
@@ -61,9 +61,9 @@ impl TryFrom<crate::raw::RawDownloadConfig> for DownloadConfig {
     type Error = ConfigError;
 
     fn try_from(raw: crate::raw::RawDownloadConfig) -> Result<Self, Self::Error> {
-        let track_quality = AudioQualityRequest::from_str(&raw.track_quality).map_err(|error| {
+        let audio_quality = AudioQualityRequest::from_str(&raw.audio_quality).map_err(|error| {
             ConfigError::InvalidValue {
-                path: "download.track_quality".to_owned(),
+                path: "download.audio_quality".to_owned(),
                 message: error.to_string(),
             }
         })?;
@@ -76,7 +76,7 @@ impl TryFrom<crate::raw::RawDownloadConfig> for DownloadConfig {
         })?;
 
         Ok(Self {
-            track_quality,
+            audio_quality,
             video_quality,
             skip_existing: raw.skip_existing,
         })
@@ -110,17 +110,19 @@ pub struct ListenerPort(NonZeroU16);
 impl ListenerPort {
     /// Creates a non-zero listener port.
     pub fn new(value: u16) -> ConfigResult<Self> {
-        match NonZeroU16::new(value) {
-            Some(value) => Ok(Self(value)),
-            None => Err(ConfigError::InvalidValue {
-                path: "listener.port".to_owned(),
-                message: "must be greater than zero".to_owned(),
-            }),
-        }
+        NonZeroU16::new(value).map_or_else(
+            || {
+                Err(ConfigError::InvalidValue {
+                    path: "listener.port".to_owned(),
+                    message: "must be greater than zero".to_owned(),
+                })
+            },
+            |value| Ok(Self(value)),
+        )
     }
 
     /// Returns the port value.
-    pub fn get(self) -> u16 {
+    pub const fn get(self) -> u16 {
         self.0.get()
     }
 }
@@ -185,7 +187,7 @@ fn inspect_unknown_keys(value: &toml::Value) -> ConfigResult<()> {
     inspect_table(
         root,
         "download",
-        &["track_quality", "video_quality", "skip_existing"],
+        &["audio_quality", "video_quality", "skip_existing"],
     )?;
     inspect_table(root, "listener", &["port", "secret"])?;
 
@@ -228,7 +230,7 @@ mod tests {
     #[test]
     fn empty_config_uses_defaults() -> Result<(), Box<dyn std::error::Error>> {
         let config = ValidatedConfig::from_toml_str("")?;
-        assert_eq!(config.download.track_quality, AudioQualityRequest::High);
+        assert_eq!(config.download.audio_quality, AudioQualityRequest::High);
         assert_eq!(config.download.video_quality, VideoQualityRequest::High);
         assert!(config.download.skip_existing);
         assert_eq!(config.listener.port.get(), 8123);
@@ -241,7 +243,7 @@ mod tests {
         let config = ValidatedConfig::from_toml_str(
             r#"
             [download]
-            track_quality = "lossless"
+            audio_quality = "lossless"
             video_quality = "best"
             skip_existing = false
 
@@ -251,7 +253,7 @@ mod tests {
             "#,
         )?;
 
-        assert_eq!(config.download.track_quality, AudioQualityRequest::Lossless);
+        assert_eq!(config.download.audio_quality, AudioQualityRequest::Lossless);
         assert_eq!(config.download.video_quality, VideoQualityRequest::Best);
         assert!(!config.download.skip_existing);
         assert_eq!(config.listener.port.get(), 9000);
@@ -264,16 +266,16 @@ mod tests {
     }
 
     #[test]
-    fn invalid_track_quality_fails_with_path() {
+    fn invalid_audio_quality_fails_with_path() {
         let error = ValidatedConfig::from_toml_str(
             r#"
             [download]
-            track_quality = "maximum"
+            audio_quality = "maximum"
             "#,
         );
         assert!(matches!(
             error,
-            Err(ConfigError::InvalidValue { ref path, .. }) if path == "download.track_quality"
+            Err(ConfigError::InvalidValue { ref path, .. }) if path == "download.audio_quality"
         ));
     }
 
@@ -294,8 +296,8 @@ mod tests {
     #[test]
     fn unsupported_quality_values_are_invalid_values() {
         for (key, value, path) in [
-            ("track_quality", "normal", "download.track_quality"),
-            ("track_quality", "max", "download.track_quality"),
+            ("audio_quality", "normal", "download.audio_quality"),
+            ("audio_quality", "max", "download.audio_quality"),
             ("video_quality", "sd", "download.video_quality"),
             ("video_quality", "hd", "download.video_quality"),
             ("video_quality", "fhd", "download.video_quality"),
@@ -316,10 +318,10 @@ mod tests {
     #[test]
     fn port_zero_fails() {
         let error = ValidatedConfig::from_toml_str(
-            r#"
+            r"
             [listener]
             port = 0
-            "#,
+            ",
         );
         assert!(matches!(
             error,
@@ -342,10 +344,10 @@ mod tests {
     #[test]
     fn unsupported_download_key_is_unknown() {
         let error = ValidatedConfig::from_toml_str(
-            r#"
+            r"
             [download]
             threads_count = 4
-            "#,
+            ",
         );
         assert!(matches!(
             error,
@@ -365,10 +367,10 @@ mod tests {
     #[test]
     fn unknown_key_fails_with_path_context() {
         let error = ValidatedConfig::from_toml_str(
-            r#"
+            r"
             [listener]
             unknown = true
-            "#,
+            ",
         );
         assert!(matches!(
             error,

@@ -98,12 +98,10 @@ fn resolve_field<'a>(
             .ok_or(TemplateError::MissingContext { namespace: "item" }),
         TemplateNamespace::Album => Ok(context
             .album()
-            .map(|album| album.field(field.field.as_str(), context.effective_quality()))
-            .unwrap_or(TemplateValue::None)),
+            .map_or(TemplateValue::None, |album| album.field(field.field.as_str(), context.effective_quality()))),
         TemplateNamespace::Playlist => Ok(context
             .playlist()
-            .map(|playlist| playlist.field(field.field.as_str()))
-            .unwrap_or(TemplateValue::None)),
+            .map_or(TemplateValue::None, |playlist| playlist.field(field.field.as_str()))),
     }
 }
 
@@ -113,10 +111,10 @@ fn render_value(
     format: Option<&FormatSpec>,
 ) -> TemplateResult<String> {
     match format {
-        Some(FormatSpec::IntPad { width, fill }) => render_int(field, value, *width, *fill),
-        Some(FormatSpec::DateTime(format)) => render_datetime(field, value, format),
-        Some(FormatSpec::Explicit(format)) => render_explicit(value, *format),
-        Some(FormatSpec::ConditionalText(text)) => render_conditional(field, value, text),
+        Some(FormatSpec::IntPad { width, fill }) => render_int(field, &value, *width, *fill),
+        Some(FormatSpec::DateTime(format)) => render_datetime(field, &value, format),
+        Some(FormatSpec::Explicit(format)) => render_explicit(&value, *format),
+        Some(FormatSpec::ConditionalText(text)) => render_conditional(field, &value, text),
         None => render_default(field, value),
     }
 }
@@ -126,7 +124,7 @@ fn render_default(field: &str, value: TemplateValue<'_>) -> TemplateResult<Strin
         TemplateValue::Text(value) => Ok(value.into_owned()),
         TemplateValue::Integer(value) => Ok(value.to_string()),
         TemplateValue::Explicit(value) => render_explicit(
-            TemplateValue::Explicit(value),
+            &TemplateValue::Explicit(value),
             crate::ExplicitFormat {
                 mode: ExplicitMode::Short,
                 upper: false,
@@ -149,11 +147,11 @@ fn render_default(field: &str, value: TemplateValue<'_>) -> TemplateResult<Strin
 
 fn render_int(
     field: &str,
-    value: TemplateValue<'_>,
+    value: &TemplateValue<'_>,
     width: u8,
     fill: IntFill,
 ) -> TemplateResult<String> {
-    let TemplateValue::Integer(value) = value else {
+    let TemplateValue::Integer(value) = *value else {
         return Err(type_mismatch(field, "integer", value));
     };
     let width = usize::from(width);
@@ -166,10 +164,10 @@ fn render_int(
 
 fn render_datetime(
     field: &str,
-    value: TemplateValue<'_>,
+    value: &TemplateValue<'_>,
     format: &crate::ParsedDateTimeFormat,
 ) -> TemplateResult<String> {
-    match value {
+    match *value {
         TemplateValue::Date(value) => {
             value
                 .format(&format.item)
@@ -188,21 +186,20 @@ fn render_datetime(
                     message: error.to_string(),
                 })
         }
-        other => Err(type_mismatch(field, "date or datetime", other)),
+        ref other => Err(type_mismatch(field, "date or datetime", other)),
     }
 }
 
 fn render_explicit(
-    value: TemplateValue<'_>,
+    value: &TemplateValue<'_>,
     format: crate::ExplicitFormat,
 ) -> TemplateResult<String> {
-    let TemplateValue::Explicit(value) = value else {
+    let TemplateValue::Explicit(value) = *value else {
         return Err(type_mismatch("explicit", "explicit", value));
     };
     let mut output = match (value, format.mode) {
-        (None, _) => "",
+        (None, _) | (Some(false), ExplicitMode::Short | ExplicitMode::Long) => "",
         (Some(true), ExplicitMode::Short) => "E",
-        (Some(false), ExplicitMode::Short | ExplicitMode::Long) => "",
         (Some(true), ExplicitMode::Long | ExplicitMode::Full) => "explicit",
         (Some(false), ExplicitMode::Full) => "clean",
     }
@@ -213,14 +210,14 @@ fn render_explicit(
     Ok(output)
 }
 
-fn render_conditional(field: &str, value: TemplateValue<'_>, text: &str) -> TemplateResult<String> {
-    let TemplateValue::Conditional(value) = value else {
+fn render_conditional(field: &str, value: &TemplateValue<'_>, text: &str) -> TemplateResult<String> {
+    let TemplateValue::Conditional(value) = *value else {
         return Err(type_mismatch(field, "conditional", value));
     };
     Ok(if value { text } else { "" }.to_owned())
 }
 
-fn type_mismatch(field: &str, expected: &'static str, value: TemplateValue<'_>) -> TemplateError {
+fn type_mismatch(field: &str, expected: &'static str, value: &TemplateValue<'_>) -> TemplateError {
     TemplateError::TypeMismatch {
         field: field.to_owned(),
         expected,
@@ -228,7 +225,7 @@ fn type_mismatch(field: &str, expected: &'static str, value: TemplateValue<'_>) 
     }
 }
 
-fn namespace_name(namespace: TemplateNamespace) -> &'static str {
+const fn namespace_name(namespace: TemplateNamespace) -> &'static str {
     match namespace {
         TemplateNamespace::Item => "item",
         TemplateNamespace::Album => "album",

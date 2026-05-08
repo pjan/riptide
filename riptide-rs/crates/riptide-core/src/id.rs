@@ -141,7 +141,7 @@ pub struct MediaRef {
 
 impl MediaRef {
     /// Creates a new fully-qualified media reference.
-    pub fn new(provider: ProviderId, kind: ResourceKind, id: ResourceId) -> Self {
+    pub const fn new(provider: ProviderId, kind: ResourceKind, id: ResourceId) -> Self {
         Self { provider, kind, id }
     }
 }

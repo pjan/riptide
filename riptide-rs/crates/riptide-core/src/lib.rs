@@ -10,7 +10,7 @@ pub mod stream;
 
 pub use catalog::{
     Album, AlbumSummary, Artist, ArtistCredit, ArtistRole, CatalogEntity, Collection,
-    CollectionKind, ExternalIdKind, ExternalIds, Playlist, ProviderExtras, Track, Video,
+    CollectionKind, ExternalIdKind, ExternalIds, Playlist, Track, Video,
 };
 pub use error::{CoreError, CoreResult, ProviderErrorKind};
 pub use id::{

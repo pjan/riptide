@@ -1,7 +1,7 @@
 //! Template render context builders.
 
 use crate::{ExtraFieldName, TemplateError, TemplateResult, TemplateValue};
-use riptide_core::{Album, ArtistRole, Playlist, ProviderQualityLabel, Track, Video};
+use riptide_core::{Album, ArtistCredit, ArtistRole, Playlist, ProviderQualityLabel, Track, Video};
 use serde::{Deserialize, Deserializer};
 use std::{borrow::Cow, collections::BTreeMap};
 
@@ -11,7 +11,7 @@ pub struct PlaylistIndex(u32);
 
 impl PlaylistIndex {
     /// Creates a one-based playlist index.
-    pub fn new(value: u32) -> Option<Self> {
+    pub const fn new(value: u32) -> Option<Self> {
         if value == 0 {
             None
         } else {
@@ -20,7 +20,7 @@ impl PlaylistIndex {
     }
 
     /// Returns the underlying one-based value.
-    pub fn get(self) -> u32 {
+    pub const fn get(self) -> u32 {
         self.0
     }
 }
@@ -38,7 +38,7 @@ pub struct TemplateContext {
 
 impl TemplateContext {
     /// Creates an empty context with a stable `now` value.
-    pub fn new(now: time::OffsetDateTime) -> Self {
+    pub const fn new(now: time::OffsetDateTime) -> Self {
         Self {
             now,
             item: None,
@@ -104,23 +104,23 @@ impl TemplateContext {
     }
 
     /// Returns the `now` value.
-    pub fn now(&self) -> time::OffsetDateTime {
+    pub const fn now(&self) -> time::OffsetDateTime {
         self.now
     }
 
-    pub(crate) fn item(&self) -> Option<&ItemTemplateInput> {
+    pub(crate) const fn item(&self) -> Option<&ItemTemplateInput> {
         self.item.as_ref()
     }
 
-    pub(crate) fn album(&self) -> Option<&AlbumTemplateInput> {
+    pub(crate) const fn album(&self) -> Option<&AlbumTemplateInput> {
         self.album.as_ref()
     }
 
-    pub(crate) fn playlist(&self) -> Option<&PlaylistTemplateInput> {
+    pub(crate) const fn playlist(&self) -> Option<&PlaylistTemplateInput> {
         self.playlist.as_ref()
     }
 
-    pub(crate) fn effective_quality(&self) -> Option<&ProviderQualityLabel> {
+    pub(crate) const fn effective_quality(&self) -> Option<&ProviderQualityLabel> {
         self.effective_quality.as_ref()
     }
 
@@ -133,7 +133,7 @@ impl TemplateContext {
 }
 
 /// Normalized item template fields.
-#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct ItemTemplateInput {
     /// Item kind.
     pub kind: String,
@@ -181,8 +181,8 @@ pub struct ItemTemplateInput {
 
 impl ItemTemplateInput {
     fn from_track(track: &Track) -> Self {
-        let mut main = artist_names(track, ArtistRole::Main);
-        let mut featured = artist_names(track, ArtistRole::Featured);
+        let mut main = artist_names_by_role(&track.artists, ArtistRole::Main);
+        let mut featured = artist_names_by_role(&track.artists, ArtistRole::Featured);
         main.sort();
         featured.sort();
         let artist = track
@@ -192,25 +192,22 @@ impl ItemTemplateInput {
             .or_else(|| track.artists.first())
             .map(|credit| credit.artist.name.clone())
             .unwrap_or_default();
-        let title = track.title.clone();
-        let version = extra_string(&track.extras.0, "version");
-        let quality = extra_string(&track.extras.0, "quality");
         Self {
             kind: "track".to_owned(),
             id: track.id.id.as_str().to_owned(),
-            title,
-            number: track.track_number.map(|n| i64::from(n.get())).unwrap_or(0),
-            volume: track.disc_number.map(|n| i64::from(n.get())).unwrap_or(0),
-            version,
-            copyright: extra_string(&track.extras.0, "copyright"),
-            bpm: extra_i64(&track.extras.0, "bpm").unwrap_or(0),
+            title: track.title.clone(),
+            number: track.track_number.map_or(0, |n| i64::from(n.get())),
+            volume: track.disc_number.map_or(0, |n| i64::from(n.get())),
+            version: track.version.clone().unwrap_or_default(),
+            copyright: track.copyright.clone().unwrap_or_default(),
+            bpm: track.bpm.unwrap_or(0),
             isrc: track
                 .external_ids
                 .0
                 .get(&riptide_core::ExternalIdKind::Isrc)
                 .cloned()
                 .unwrap_or_default(),
-            quality,
+            quality: track.quality_label.clone().unwrap_or_default(),
             artist,
             artists: main.join(", "),
             features: featured.join(", "),
@@ -221,13 +218,13 @@ impl ItemTemplateInput {
                 .collect::<Vec<_>>()
                 .join(", "),
             explicit: track.explicit,
-            dolby: extra_bool(&track.extras.0, "dolby").unwrap_or(false),
+            dolby: track.dolby_atmos,
         }
     }
 
     fn from_video(video: &Video) -> Self {
-        let mut main = artist_names_video(video, ArtistRole::Main);
-        let mut featured = artist_names_video(video, ArtistRole::Featured);
+        let mut main = artist_names_by_role(&video.artists, ArtistRole::Main);
+        let mut featured = artist_names_by_role(&video.artists, ArtistRole::Featured);
         main.sort();
         featured.sort();
         let artist = video
@@ -241,13 +238,13 @@ impl ItemTemplateInput {
             kind: "video".to_owned(),
             id: video.id.id.as_str().to_owned(),
             title: video.title.clone(),
-            number: video.track_number.map(|n| i64::from(n.get())).unwrap_or(0),
-            volume: video.disc_number.map(|n| i64::from(n.get())).unwrap_or(0),
+            number: video.track_number.map_or(0, |n| i64::from(n.get())),
+            volume: video.disc_number.map_or(0, |n| i64::from(n.get())),
             version: String::new(),
             copyright: String::new(),
             bpm: 0,
             isrc: String::new(),
-            quality: extra_string(&video.extras.0, "quality"),
+            quality: video.quality_label.clone().unwrap_or_default(),
             artist,
             artists: main.join(", "),
             features: featured.join(", "),
@@ -294,7 +291,7 @@ impl ItemTemplateInput {
 }
 
 /// Normalized album template fields.
-#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct AlbumTemplateInput {
     /// Provider album ID.
     pub id: String,
@@ -342,8 +339,8 @@ impl AlbumTemplateInput {
             artists: main.join(", "),
             date: album.release_date,
             explicit: album.explicit,
-            master: extra_bool(&album.extras.0, "hires_lossless").unwrap_or(false),
-            release: extra_string(&album.extras.0, "release"),
+            master: album.hires_lossless,
+            release: album.release_type.clone().unwrap_or_default(),
         }
     }
 
@@ -359,14 +356,12 @@ impl AlbumTemplateInput {
             "artists" => TemplateValue::Text(Cow::Borrowed(&self.artists)),
             "date" => self
                 .date
-                .map(TemplateValue::Date)
-                .unwrap_or(TemplateValue::None),
+                .map_or(TemplateValue::None, TemplateValue::Date),
             "explicit" => TemplateValue::Explicit(self.explicit),
             "master" => TemplateValue::Conditional(
                 self.master
                     && effective_quality
-                        .map(|label| label.as_str() == "MAX")
-                        .unwrap_or(false),
+                        .is_some_and(|label| label.as_str() == "MAX"),
             ),
             "release" => TemplateValue::Text(Cow::Borrowed(&self.release)),
             _ => TemplateValue::None,
@@ -375,7 +370,7 @@ impl AlbumTemplateInput {
 }
 
 /// Normalized playlist template fields.
-#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct PlaylistTemplateInput {
     /// Playlist UUID.
     pub uuid: String,
@@ -409,49 +404,21 @@ impl PlaylistTemplateInput {
             "index" => TemplateValue::Integer(i64::from(self.index)),
             "created" => self
                 .created
-                .map(TemplateValue::DateTime)
-                .unwrap_or(TemplateValue::None),
+                .map_or(TemplateValue::None, TemplateValue::DateTime),
             "updated" => self
                 .updated
-                .map(TemplateValue::DateTime)
-                .unwrap_or(TemplateValue::None),
+                .map_or(TemplateValue::None, TemplateValue::DateTime),
             _ => TemplateValue::None,
         }
     }
 }
 
-fn artist_names(track: &Track, role: ArtistRole) -> Vec<String> {
-    track
-        .artists
+fn artist_names_by_role(credits: &[ArtistCredit], role: ArtistRole) -> Vec<String> {
+    credits
         .iter()
         .filter(|credit| credit.role == role)
         .map(|credit| credit.artist.name.clone())
         .collect()
-}
-
-fn artist_names_video(video: &Video, role: ArtistRole) -> Vec<String> {
-    video
-        .artists
-        .iter()
-        .filter(|credit| credit.role == role)
-        .map(|credit| credit.artist.name.clone())
-        .collect()
-}
-
-fn extra_string(value: &serde_json::Value, key: &str) -> String {
-    value
-        .get(key)
-        .and_then(serde_json::Value::as_str)
-        .unwrap_or_default()
-        .to_owned()
-}
-
-fn extra_i64(value: &serde_json::Value, key: &str) -> Option<i64> {
-    value.get(key).and_then(serde_json::Value::as_i64)
-}
-
-fn extra_bool(value: &serde_json::Value, key: &str) -> Option<bool> {
-    value.get(key).and_then(serde_json::Value::as_bool)
 }
 
 /// JSON fixture schema for deterministic template rendering tests.

@@ -123,7 +123,7 @@ impl PollingInterval {
     }
 
     /// Returns the duration.
-    pub fn as_duration(self) -> Duration {
+    pub const fn as_duration(self) -> Duration {
         self.0
     }
 
@@ -151,7 +151,7 @@ impl TokenExpiry {
     }
 
     /// Returns the expiry timestamp.
-    pub fn as_datetime(self) -> time::OffsetDateTime {
+    pub const fn as_datetime(self) -> time::OffsetDateTime {
         self.0
     }
 }
@@ -251,13 +251,24 @@ pub struct TidalTokenState {
     pub country_code: CountryCode,
 }
 
-/// JSON token store.
+/// Token persistence abstraction.
+#[async_trait::async_trait]
+pub trait TokenStore: Send + Sync + std::fmt::Debug {
+    /// Loads token state, returning `None` when no token is stored.
+    async fn load(&self) -> TidalResult<Option<TidalTokenState>>;
+    /// Stores token state.
+    async fn save(&self, state: &TidalTokenState) -> TidalResult<()>;
+    /// Removes token state.
+    async fn clear(&self) -> TidalResult<()>;
+}
+
+/// JSON file-backed token store.
 #[derive(Debug, Clone)]
-pub struct TidalTokenStore {
+pub struct FileTokenStore {
     path: PathBuf,
 }
 
-impl TidalTokenStore {
+impl FileTokenStore {
     /// Creates a token store for a path.
     pub fn new(path: impl Into<PathBuf>) -> Self {
         Self { path: path.into() }
@@ -267,15 +278,17 @@ impl TidalTokenStore {
     pub fn path(&self) -> &Path {
         &self.path
     }
+}
 
-    /// Loads token state, returning `None` when the file is missing.
-    pub async fn load(&self) -> TidalResult<Option<TidalTokenState>> {
+#[async_trait::async_trait]
+impl TokenStore for FileTokenStore {
+    async fn load(&self) -> TidalResult<Option<TidalTokenState>> {
         let path = self.path.clone();
         tokio::task::spawn_blocking(move || {
             if !path.exists() {
                 return Ok(None);
             }
-            let contents = fs::read_to_string(&path).map_err(|error| token_error(&path, error))?;
+            let contents = fs::read_to_string(&path).map_err(|error| token_error(&path, &error))?;
             serde_json::from_str(&contents)
                 .map(Some)
                 .map_err(|error| TidalError::TokenStore {
@@ -290,8 +303,7 @@ impl TidalTokenStore {
         })?
     }
 
-    /// Stores token state atomically.
-    pub async fn save(&self, state: &TidalTokenState) -> TidalResult<()> {
+    async fn save(&self, state: &TidalTokenState) -> TidalResult<()> {
         let path = self.path.clone();
         let state = state.clone();
         tokio::task::spawn_blocking(move || {
@@ -299,7 +311,7 @@ impl TidalTokenStore {
                 path: path.display().to_string(),
                 message: "token path must have a parent directory".to_owned(),
             })?;
-            fs::create_dir_all(parent).map_err(|error| token_error(parent, error))?;
+            fs::create_dir_all(parent).map_err(|error| token_error(parent, &error))?;
             let mut tmp = tempfile::NamedTempFile::new_in(parent).map_err(|error| {
                 TidalError::TokenStore {
                     path: parent.display().to_string(),
@@ -323,13 +335,12 @@ impl TidalTokenStore {
         })?
     }
 
-    /// Removes token state if present.
-    pub async fn clear(&self) -> TidalResult<()> {
+    async fn clear(&self) -> TidalResult<()> {
         let path = self.path.clone();
         tokio::task::spawn_blocking(move || match fs::remove_file(&path) {
             Ok(()) => Ok(()),
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
-            Err(error) => Err(token_error(&path, error)),
+            Err(error) => Err(token_error(&path, &error)),
         })
         .await
         .map_err(|error| TidalError::TokenStore {
@@ -339,7 +350,7 @@ impl TidalTokenStore {
     }
 }
 
-fn token_error(path: &Path, error: std::io::Error) -> TidalError {
+fn token_error(path: &Path, error: &std::io::Error) -> TidalError {
     TidalError::TokenStore {
         path: path.display().to_string(),
         message: error.to_string(),
@@ -356,21 +367,12 @@ pub struct TidalAuthClient {
 
 impl TidalAuthClient {
     /// Creates an auth client.
-    pub fn new(base_url: Url, credentials: TidalCredentials) -> Self {
-        Self::try_new(base_url.clone(), credentials.clone()).unwrap_or_else(|_| Self {
-            client: reqwest::Client::new(),
+    pub const fn new(client: reqwest::Client, base_url: Url, credentials: TidalCredentials) -> Self {
+        Self {
+            client,
             base_url,
             credentials,
-        })
-    }
-
-    /// Creates an auth client, loading extra PEM roots from certificate env vars.
-    pub fn try_new(base_url: Url, credentials: TidalCredentials) -> TidalResult<Self> {
-        Ok(Self {
-            client: crate::http::client()?,
-            base_url,
-            credentials,
-        })
+        }
     }
 
     /// Requests a device code.
@@ -491,12 +493,17 @@ impl TidalAuthClient {
                 operation: "token json",
                 source,
             })?;
-        let refresh_token = response.refresh_token.unwrap_or_else(|| {
-            form.iter()
-                .find(|(key, _)| *key == "refresh_token")
-                .map(|(_, value)| (*value).to_owned())
-                .unwrap_or_default()
-        });
+        let refresh_token = response
+            .refresh_token
+            .or_else(|| {
+                form.iter()
+                    .find(|(key, _)| *key == "refresh_token")
+                    .map(|(_, value)| (*value).to_owned())
+            })
+            .ok_or(TidalError::InvalidResponse {
+                field: "refresh_token".to_owned(),
+                message: "server did not return a refresh token".to_owned(),
+            })?;
         Ok(TidalTokenState {
             access_token: AccessToken::new(response.access_token)?,
             refresh_token: RefreshToken::new(refresh_token)?,
@@ -546,11 +553,36 @@ async fn api_error(
     status: u16,
     response: reqwest::Response,
 ) -> TidalError {
-    let message = response.text().await.unwrap_or_default();
+    let message = response
+        .text()
+        .await
+        .unwrap_or_else(|e| format!("<body read failed: {e}>"));
+
+    if let Some(oauth_error) = parse_oauth_error(&message) {
+        return oauth_error;
+    }
+
     TidalError::Api {
         operation: operation.into(),
         status,
         message,
+    }
+}
+
+/// Attempts to extract a structured `OAuth2` error from a JSON response body.
+fn parse_oauth_error(body: &str) -> Option<TidalError> {
+    #[derive(serde::Deserialize)]
+    struct OAuthError {
+        #[serde(default)]
+        error: String,
+    }
+
+    let parsed: OAuthError = serde_json::from_str(body).ok()?;
+    match parsed.error.as_str() {
+        "authorization_pending" => Some(TidalError::AuthorizationPending),
+        "slow_down" => Some(TidalError::SlowDown),
+        "expired_token" => Some(TidalError::ExpiredToken),
+        _ => None,
     }
 }
 

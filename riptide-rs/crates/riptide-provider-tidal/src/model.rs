@@ -2,6 +2,53 @@
 
 use serde::Deserialize;
 
+/// TIDAL artist role from the API.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum TidalArtistRole {
+    /// Main artist.
+    Main,
+    /// Featured artist.
+    Featured,
+    /// Any other role.
+    #[serde(other)]
+    Other,
+}
+
+/// TIDAL media metadata tag.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Deserialize)]
+pub enum TidalMediaTag {
+    /// Dolby Atmos spatial audio.
+    #[serde(rename = "DOLBY_ATMOS")]
+    DolbyAtmos,
+    /// Hi-res lossless audio.
+    #[serde(rename = "HIRES_LOSSLESS")]
+    HiResLossless,
+    /// MQA encoded audio.
+    #[serde(rename = "MQA")]
+    Mqa,
+    /// Any other tag.
+    #[serde(other)]
+    Other,
+}
+
+/// TIDAL search top hit kind.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum TidalTopHitKind {
+    /// Track hit.
+    Tracks,
+    /// Album hit.
+    Albums,
+    /// Playlist hit.
+    Playlists,
+    /// Artist hit.
+    Artists,
+    /// Any other hit type.
+    #[serde(other)]
+    Other,
+}
+
 /// TIDAL session response.
 #[derive(Debug, Clone, Deserialize)]
 pub struct SessionResponse {
@@ -22,7 +69,7 @@ pub struct TidalArtist {
     pub name: String,
     /// Artist role type.
     #[serde(default, rename = "type")]
-    pub kind: Option<String>,
+    pub role: Option<TidalArtistRole>,
 }
 
 /// TIDAL media metadata.
@@ -30,7 +77,7 @@ pub struct TidalArtist {
 pub struct MediaMetadata {
     /// Tags.
     #[serde(default)]
-    pub tags: Vec<String>,
+    pub tags: Vec<TidalMediaTag>,
 }
 
 /// TIDAL album summary.
@@ -176,12 +223,15 @@ pub struct TidalPlaylist {
 }
 
 /// Paginated wrapper.
+#[allow(clippy::struct_field_names)]
 #[derive(Debug, Clone, Deserialize)]
 #[serde(bound(deserialize = "T: Deserialize<'de>"))]
 pub struct Items<T> {
     /// Limit.
+    #[allow(dead_code)]
     pub limit: u32,
     /// Offset.
+    #[allow(dead_code)]
     pub offset: u32,
     /// Items.
     #[serde(default)]
@@ -196,13 +246,6 @@ impl<T> Default for Items<T> {
             items: Vec::new(),
         }
     }
-}
-
-/// TIDAL item wrapper.
-#[derive(Debug, Clone, Deserialize)]
-pub struct ItemWrapper<T> {
-    /// Wrapped item.
-    pub item: T,
 }
 
 /// Search response.
@@ -233,7 +276,7 @@ pub struct TidalSearch {
 pub struct TopHit {
     /// Hit type.
     #[serde(rename = "type")]
-    pub kind: String,
+    pub kind: TidalTopHitKind,
     /// Raw value.
     pub value: serde_json::Value,
 }

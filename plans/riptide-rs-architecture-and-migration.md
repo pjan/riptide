@@ -2,8 +2,9 @@
 
 ## Status
 
-Draft for review. No substantial implementation should start from this roadmap
-alone.
+Slices 0–3 implemented. Slice 3 audit completed and all 26 actions applied
+(see `riptide-rs-slice-3-audit.md`). Architecture document updated to reflect
+as-built state after audit.
 
 ## Goal
 
@@ -185,7 +186,6 @@ pub struct TrackNumber(u32);
 pub struct DiscNumber(u32);
 pub struct ItemCount(u32);
 pub struct ExternalIds(BTreeMap<ExternalIdKind, String>);
-pub struct ProviderExtras(serde_json::Value);
 
 pub enum ExternalIdKind {
     Isrc,
@@ -209,11 +209,8 @@ pub enum ResourceKind {
 }
 ```
 
-`ProviderExtras` is the typed escape hatch for provider-specific response
-fragments. It should not be used when a field has stable cross-provider
-semantics.
-
-Provider-neutral catalog entities:
+Provider-neutral catalog entities (provider-specific fields are typed directly
+on the structs rather than carried as untyped JSON):
 
 ```rust
 pub struct ArtistCredit {
@@ -237,7 +234,11 @@ pub struct Track {
     pub disc_number: Option<DiscNumber>,
     pub explicit: Option<bool>,
     pub external_ids: ExternalIds,
-    pub extras: ProviderExtras,
+    pub version: Option<String>,
+    pub copyright: Option<String>,
+    pub bpm: Option<i64>,
+    pub quality_label: Option<String>,
+    pub dolby_atmos: bool,
 }
 
 pub struct Video {
@@ -249,7 +250,7 @@ pub struct Video {
     pub track_number: Option<TrackNumber>,
     pub disc_number: Option<DiscNumber>,
     pub explicit: Option<bool>,
-    pub extras: ProviderExtras,
+    pub quality_label: Option<String>,
 }
 
 pub struct Album {
@@ -260,7 +261,8 @@ pub struct Album {
     pub track_count: Option<ItemCount>,
     pub video_count: Option<ItemCount>,
     pub explicit: Option<bool>,
-    pub extras: ProviderExtras,
+    pub release_type: Option<String>,
+    pub hires_lossless: bool,
 }
 
 pub struct Playlist {
@@ -270,7 +272,6 @@ pub struct Playlist {
     pub item_count: Option<ItemCount>,
     pub created_at: Option<time::OffsetDateTime>,
     pub updated_at: Option<time::OffsetDateTime>,
-    pub extras: ProviderExtras,
 }
 
 pub struct Artist {
@@ -310,9 +311,10 @@ pub enum CatalogEntity {
 }
 ```
 
-These entity structs are candidate shapes for Slice 1, not a final field lock.
-Slice 1 should define the minimal public fields needed by later slices and leave
-provider-specific response details in `ProviderExtras`.
+These entity structs reflect the as-built state after the Slice 3 audit.
+Provider-specific fields (version, copyright, BPM, quality labels, Dolby Atmos,
+hi-res lossless, release type) are typed directly on the core structs rather
+than carried as untyped JSON via the removed `ProviderExtras` escape hatch.
 
 `Artist.id` is optional because credits-only contributors may have a display
 name but no provider-resolvable artist reference. Artist roles are contextual:
@@ -423,7 +425,12 @@ pub struct StreamVariant {
 pub struct Lyrics {
     pub text: Option<String>,
     pub synchronized_lrc: Option<String>,
-    pub provider: Option<String>,
+    pub source: Option<LyricsSource>,
+}
+
+pub enum LyricsSource {
+    Provider(ProviderId),
+    External(LyricsSourceName),
 }
 
 pub enum PostProcessStep {
@@ -476,14 +483,16 @@ pub trait Provider:
     fn capabilities(&self) -> ProviderCapabilities;
 }
 
-pub struct ProviderCapabilities {
-    pub resolve: bool,
-    pub collections: bool,
-    pub streams: bool,
-    pub lyrics: bool,
-    pub artwork: bool,
-    pub credits: bool,
-    pub search: bool,
+bitflags! {
+    pub struct ProviderCapabilities: u8 {
+        const RESOLVE     = 1 << 0;
+        const COLLECTIONS = 1 << 1;
+        const STREAMS     = 1 << 2;
+        const LYRICS      = 1 << 3;
+        const ARTWORK     = 1 << 4;
+        const CREDITS     = 1 << 5;
+        const SEARCH      = 1 << 6;
+    }
 }
 ```
 
@@ -507,37 +516,46 @@ provider raw model
   -> file tag model
 ```
 
-Avoid one universal "perfect track" structure. Keep shared fields typed and use
-explicit provider extras for non-portable data.
+Avoid one universal "perfect track" structure. Keep shared fields typed on the
+core structs. The `ProviderExtras` JSON escape hatch has been removed — all
+provider-specific fields are now typed directly.
 
-Likely crates:
+Crates:
 
 - `async-trait`
+- `bitflags`
 - `serde`
-- `serde_json`
 - `time`
 - `url`
 - `thiserror`
 
+Note: `serde_json` moved to dev-dependencies only (used in tests).
+
 ### `riptide-config`
 
-TOML parsing, defaults, validation, migration errors, app directories, and
-generated example config.
+TOML parsing, defaults, validation, and app directories.
 
-Use a two-step parse:
+Uses a two-step parse:
 
 ```text
 RawConfig via serde
   -> ValidatedConfig via TryFrom
 ```
 
-Responsibilities:
+Implemented responsibilities:
 
-- Reject unknown renamed keys with actionable migration errors.
-- Reject unwired keys.
-- Validate templates, quality values, concurrency limits, and paths before
-  execution.
-- Keep comments in generated config aligned with implemented behavior.
+- Reject unknown keys with path-context errors (`download.threads_count`).
+- Validate quality values (`audio_quality`, `video_quality`) and port.
+- `audio_quality` (not `track_quality`) — renamed during Slice 3 audit to
+  match domain terminology (`AudioQualityRequest`).
+- Empty config produces sensible defaults (high quality, port 8123).
+
+Future config sections (blocked on downstream slices):
+
+- `[download.templates]` — wire to the template engine (Slice 4+).
+- `[tidal]` — auth/cache file paths, layered over CLI flags.
+- `[metadata]`, `[m3u]`, `[list]` — blocked on respective features.
+- `config path` subcommand for discoverability.
 
 Likely crates:
 
@@ -566,24 +584,20 @@ Design goals:
 - Validate template fields before download starts.
 - Keep sanitized path segments deterministic across platforms.
 
-### `riptide-http`
+### `riptide-http` (not yet a separate crate)
 
-HTTP client wrapper, cache policy, retry policy, auth headers, debug response
-capture, and cache-key construction.
+HTTP client construction is currently in `riptide-provider-tidal::http` (private
+module) and exposed via `http_client()`. The client is built once at the CLI
+boundary with optional PEM certificate roots from environment variables, then
+injected into both `TidalAuthClient` and `TidalClient`.
 
-Likely crates:
+Cache keys are typed values (`CacheKey`) built by pure functions. The `ApiCache`
+trait abstracts cache storage with `get`/`put` methods. `RedbApiCache` is the
+default implementation using an embedded redb database.
 
-- `reqwest`
-- `reqwest-middleware`
-- `http-cache-reqwest`
-- `tokio`
-- `tracing`
-- `serde_json`
-
-Cache keys must be explicit typed values built by pure functions. Different API
-operations need different cache behavior: static catalog calls can cache,
-sessions/search/stream URLs should generally not cache or should use very short
-TTL.
+A separate `riptide-http` crate may be extracted if a second provider needs
+shared HTTP infrastructure. For now, keeping it provider-local avoids premature
+abstraction.
 
 ### `riptide-provider-tidal`
 
@@ -591,9 +605,27 @@ TIDAL auth, TIDAL REST API models, endpoint client, pagination, resource URL
 parsing, TIDAL quality mapping, TIDAL manifest wrapper decoding, lyrics,
 credits, covers, and TIDAL-to-core model conversion.
 
-This crate owns the raw `serde` models equivalent to the current Python
-Pydantic models. It also owns tolerant deserialization for unstable TIDAL
-responses.
+This crate owns the raw `serde` models for TIDAL API responses with typed
+enums (`TidalArtistRole`, `TidalMediaTag`, `TidalTopHitKind`) instead of
+string-typed fields. It also owns tolerant deserialization for unstable TIDAL
+responses via `#[serde(other)]` fallback variants.
+
+Architecture after Slice 3 audit:
+
+- **`TokenStore` trait** — abstracts token persistence. `FileTokenStore` is
+  the default implementation (atomic JSON file writes via tempfile).
+- **`ApiCache` trait** — abstracts API response caching. `RedbApiCache` is
+  the default implementation (redb embedded database).
+- **`reqwest::Client` injection** — HTTP client is constructed once at the
+  CLI boundary and passed into both `TidalAuthClient` and `TidalClient`.
+- **`TIDAL_PROVIDER_ID`** — `LazyLock<ProviderId>` static avoids repeated
+  validation of the literal "tidal" string.
+- **Structured OAuth errors** — `AuthorizationPending`, `SlowDown`,
+  `ExpiredToken` variants parsed from OAuth2 error responses instead of
+  matching on error body substrings.
+- **Single token load per request** — `get_json` loads the token once and
+  derives country code from it, eliminating the previous double filesystem
+  read.
 
 The provider implements the provider-neutral traits defined in `riptide-core`.
 It does not define provider capability traits of its own.
@@ -839,7 +871,7 @@ Never require real TIDAL credentials in default tests.
 
 Each slice must start with a detailed plan in `docs/riptide-rs/`.
 
-### Slice 0: Workspace and Nix shell
+### Slice 0: Workspace and Nix shell ✓
 
 Deliverables:
 
@@ -856,7 +888,7 @@ Tests/checks:
 - `cargo test`
 - `nix flake check`
 
-### Slice 1: Core identifiers and config
+### Slice 1: Core identifiers and config ✓
 
 Deliverables:
 
@@ -873,7 +905,7 @@ Tests:
 - Unknown and renamed key errors.
 - Newtype validation.
 
-### Slice 2: Template engine
+### Slice 2: Template engine ✓
 
 Deliverables:
 
@@ -889,21 +921,31 @@ Tests:
 - Date and integer format handling.
 - Segment cleanup.
 
-### Slice 3: TIDAL auth and read-only API
+### Slice 3: TIDAL auth and read-only API ✓
 
 Deliverables:
 
-- OAuth device flow.
+- OAuth device flow with structured error variants.
 - Refresh flow.
-- TIDAL API client with cache policy.
-- Read-only `list` support for track, album, playlist.
+- TIDAL API client with cache policy and single token load per request.
+- Read-only `list` support for track, video, album, playlist, search.
+- `TokenStore` and `ApiCache` trait abstractions.
+- Injected `reqwest::Client` (constructed once at CLI boundary).
+- `clippy::pedantic` and `clippy::nursery` enabled workspace-wide.
 
-Tests:
+Tests (77 total across workspace):
 
-- Mocked auth responses.
-- Token refresh behavior.
-- API cache key and cache policy.
-- Serde models for fixture JSON.
+- Auth: country code validation, secret redaction, polling interval, credential
+  loading, URL parsing.
+- Cache: key sorting, expiry eviction.
+- Convert: full track/video/album/playlist/lyrics conversion, artist role
+  mapping, quality label mapping, missing optional fields.
+- Resource: URL parsing (full URLs, path-style, plural kinds, edge cases).
+- Config: defaults, validation, unknown keys.
+- Template: parsing, rendering, sanitization.
+- CLI integration: config check, template render, auth status.
+
+Audit: 26 actions applied (see `riptide-rs-slice-3-audit.md`).
 
 ### Slice 4: Manifest and media download
 
@@ -1003,16 +1045,16 @@ Tests:
 
 These should be resolved before the linked slice plan is approved.
 
-| Decision | Blocks |
-| --- | --- |
-| Whether `riptide-rs` must preserve exact Python template compatibility or only documented compatibility. | Slice 2 |
-| Whether auth tokens should remain JSON files initially or use OS keyrings. | Slice 3 |
-| Whether API cache should use `http-cache-reqwest` directly or a custom SQLite cache for tighter TTL/debug behavior. | Slice 3 |
-| Whether `lofty` is sufficient for all metadata tags. | Slice 5 |
-| Whether listener mode remains an in-memory queue with single-resource sequential processing and per-resource track concurrency, matching current behavior, or becomes a more general scheduler. Persistent queues are out of scope unless this decision changes. | Slice 7 |
-| What canonical provider reference syntax should be: `tidal:track:123`, `tidal://track/123`, or both. | Slice 8 |
-| Whether the first-phase `Provider` supertrait remains acceptable or must be replaced by capability-specific registries before local/import-only providers are added. | Slice 8 |
-| How much local-library scanning belongs in the initial architecture versus a later provider slice. | Slice 8 |
+| Decision | Blocks | Resolution |
+| --- | --- | --- |
+| Whether `riptide-rs` must preserve exact Python template compatibility or only documented compatibility. | Slice 2 | **Resolved.** New app — no backwards compatibility with Python. Own vocabulary and naming. |
+| Whether auth tokens should remain JSON files initially or use OS keyrings. | Slice 3 | **Resolved.** `TokenStore` trait extracted. `FileTokenStore` is the default. `KeyringTokenStore` can be added later behind the same trait. |
+| Whether API cache should use `http-cache-reqwest` directly or a custom cache for tighter TTL/debug behavior. | Slice 3 | **Resolved.** `ApiCache` trait extracted. `RedbApiCache` (redb embedded DB) is the default. |
+| Whether `lofty` is sufficient for all metadata tags. | Slice 5 | Open |
+| Whether listener mode remains an in-memory queue or becomes a more general scheduler. | Slice 7 | Open |
+| What canonical provider reference syntax should be. | Slice 8 | Open |
+| Whether the first-phase `Provider` supertrait remains or must be split by capability. | Slice 8 | Open. `ProviderCapabilities` now uses bitflags which simplifies introspection. |
+| How much local-library scanning belongs in the initial architecture. | Slice 8 | Open |
 
 ## Review Checklist
 

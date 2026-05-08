@@ -17,7 +17,7 @@ pub struct RawConfig {
 #[serde(default, deny_unknown_fields)]
 pub struct RawDownloadConfig {
     /// Requested audio quality.
-    pub track_quality: String,
+    pub audio_quality: String,
     /// Requested video quality.
     pub video_quality: String,
     /// Skip existing files.
@@ -27,7 +27,7 @@ pub struct RawDownloadConfig {
 impl Default for RawDownloadConfig {
     fn default() -> Self {
         Self {
-            track_quality: "high".to_owned(),
+            audio_quality: "high".to_owned(),
             video_quality: "high".to_owned(),
             skip_existing: true,
         }

@@ -69,14 +69,23 @@ struct StoredEntry {
     value: serde_json::Value,
 }
 
+/// API cache abstraction.
+#[async_trait::async_trait]
+pub trait ApiCache: Send + Sync + std::fmt::Debug {
+    /// Reads a cache entry, returning `None` on miss or expiry.
+    async fn get(&self, key: &CacheKey) -> TidalResult<Option<serde_json::Value>>;
+    /// Writes one cache entry.
+    async fn put(&self, entry: CacheEntryToWrite) -> TidalResult<()>;
+}
+
 /// redb-backed API cache.
 #[derive(Debug, Clone)]
-pub struct TidalApiCache {
+pub struct RedbApiCache {
     path: PathBuf,
     database: Arc<Database>,
 }
 
-impl TidalApiCache {
+impl RedbApiCache {
     /// Opens or creates a cache database.
     pub async fn open(path: impl Into<PathBuf>) -> TidalResult<Self> {
         let path = path.into();
@@ -102,46 +111,6 @@ impl TidalApiCache {
             path,
             database: Arc::new(database),
         })
-    }
-
-    /// Reads a cache entry, evicting it on read if expired.
-    pub async fn get(&self, key: &CacheKey) -> TidalResult<Option<serde_json::Value>> {
-        let database = Arc::clone(&self.database);
-        let key = key.clone();
-        tokio::task::spawn_blocking(move || {
-            let read = database.begin_read().map_err(cache_error)?;
-            let table = read.open_table(TABLE).map_err(cache_error)?;
-            let Some(stored) = table.get(key.as_str()).map_err(cache_error)? else {
-                return Ok(None);
-            };
-            let stored: StoredEntry =
-                serde_json::from_str::<StoredEntry>(stored.value()).map_err(|error| {
-                    TidalError::Cache {
-                        message: error.to_string(),
-                    }
-                })?;
-            if stored.expires_at > time::OffsetDateTime::now_utc() {
-                return Ok(Some(stored.value));
-            }
-            drop(table);
-            drop(read);
-            let write = database.begin_write().map_err(cache_error)?;
-            {
-                let mut table = write.open_table(TABLE).map_err(cache_error)?;
-                table.remove(key.as_str()).map_err(cache_error)?;
-            }
-            write.commit().map_err(cache_error)?;
-            Ok(None)
-        })
-        .await
-        .map_err(|error| TidalError::Cache {
-            message: error.to_string(),
-        })?
-    }
-
-    /// Writes one cache entry.
-    pub async fn put(&self, entry: CacheEntryToWrite) -> TidalResult<()> {
-        self.put_batch(vec![entry]).await
     }
 
     /// Writes multiple cache entries in one write transaction.
@@ -179,6 +148,47 @@ impl TidalApiCache {
     /// Returns the cache path.
     pub fn path(&self) -> &std::path::Path {
         &self.path
+    }
+}
+
+#[async_trait::async_trait]
+impl ApiCache for RedbApiCache {
+    async fn get(&self, key: &CacheKey) -> TidalResult<Option<serde_json::Value>> {
+        let database = Arc::clone(&self.database);
+        let key = key.clone();
+        tokio::task::spawn_blocking(move || {
+            let read = database.begin_read().map_err(cache_error)?;
+            let table = read.open_table(TABLE).map_err(cache_error)?;
+            let Some(stored) = table.get(key.as_str()).map_err(cache_error)? else {
+                return Ok(None);
+            };
+            let stored: StoredEntry =
+                serde_json::from_str::<StoredEntry>(stored.value()).map_err(|error| {
+                    TidalError::Cache {
+                        message: error.to_string(),
+                    }
+                })?;
+            if stored.expires_at > time::OffsetDateTime::now_utc() {
+                return Ok(Some(stored.value));
+            }
+            drop(table);
+            drop(read);
+            let write = database.begin_write().map_err(cache_error)?;
+            {
+                let mut table = write.open_table(TABLE).map_err(cache_error)?;
+                table.remove(key.as_str()).map_err(cache_error)?;
+            }
+            write.commit().map_err(cache_error)?;
+            Ok(None)
+        })
+        .await
+        .map_err(|error| TidalError::Cache {
+            message: error.to_string(),
+        })?
+    }
+
+    async fn put(&self, entry: CacheEntryToWrite) -> TidalResult<()> {
+        self.put_batch(vec![entry]).await
     }
 }
 
@@ -221,7 +231,7 @@ mod tests {
         let dir = tempfile::tempdir().map_err(|error| TidalError::Cache {
             message: error.to_string(),
         })?;
-        let cache = TidalApiCache::open(dir.path().join("cache.redb")).await?;
+        let cache = RedbApiCache::open(dir.path().join("cache.redb")).await?;
         let key = CacheKey::new("GET", "tracks/1", Some("US"), &[]);
         cache
             .put(CacheEntryToWrite {

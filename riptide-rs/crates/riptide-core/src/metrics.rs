@@ -12,7 +12,7 @@ macro_rules! non_zero_u32_type {
 
         impl $name {
             /// Creates a new non-zero value.
-            pub fn new(value: u32) -> CoreResult<Self> {
+            pub const fn new(value: u32) -> CoreResult<Self> {
                 match NonZeroU32::new(value) {
                     Some(value) => Ok(Self(value)),
                     None => Err(CoreError::ZeroValue {
@@ -22,7 +22,7 @@ macro_rules! non_zero_u32_type {
             }
 
             /// Returns the stored value.
-            pub fn get(self) -> u32 {
+            pub const fn get(self) -> u32 {
                 self.0.get()
             }
         }
@@ -75,7 +75,7 @@ pub struct ConcurrencyLimit(NonZeroUsize);
 
 impl ConcurrencyLimit {
     /// Creates a new concurrency limit. Zero is rejected structurally.
-    pub fn new(value: usize) -> CoreResult<Self> {
+    pub const fn new(value: usize) -> CoreResult<Self> {
         match NonZeroUsize::new(value) {
             Some(value) => Ok(Self(value)),
             None => Err(CoreError::ZeroValue {
@@ -85,7 +85,7 @@ impl ConcurrencyLimit {
     }
 
     /// Returns the stored limit.
-    pub fn get(self) -> usize {
+    pub const fn get(self) -> usize {
         self.0.get()
     }
 }
@@ -96,12 +96,12 @@ pub struct MediaDuration(Duration);
 
 impl MediaDuration {
     /// Creates a duration from whole seconds.
-    pub fn from_secs(seconds: u64) -> Self {
+    pub const fn from_secs(seconds: u64) -> Self {
         Self(Duration::from_secs(seconds))
     }
 
     /// Returns the underlying duration.
-    pub fn as_duration(self) -> Duration {
+    pub const fn as_duration(self) -> Duration {
         self.0
     }
 }
