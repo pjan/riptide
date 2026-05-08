@@ -1072,11 +1072,9 @@ impl ProgressGroup {
             eprintln!("download: {label}");
             return TrackProgress::disabled(label);
         };
-        let bar = multi.add(ProgressBar::new_spinner());
-        bar.set_style(spinner_progress_style());
-        bar.enable_steady_tick(std::time::Duration::from_millis(100));
+        let bar = multi.add(ProgressBar::new(1));
+        bar.set_style(track_progress_style());
         let progress = TrackProgress {
-            multi: Some(Arc::clone(multi)),
             bar: Some(bar),
             label,
             bytes_downloaded: AtomicU64::new(0),
@@ -1099,7 +1097,6 @@ impl ProgressGroup {
 }
 
 struct TrackProgress {
-    multi: Option<Arc<MultiProgress>>,
     bar: Option<ProgressBar>,
     label: String,
     bytes_downloaded: AtomicU64,
@@ -1108,7 +1105,6 @@ struct TrackProgress {
 impl TrackProgress {
     const fn disabled(label: String) -> Self {
         Self {
-            multi: None,
             bar: None,
             label,
             bytes_downloaded: AtomicU64::new(0),
@@ -1117,17 +1113,19 @@ impl TrackProgress {
 
     fn phase(&self, phase: &'static str) {
         if let Some(bar) = &self.bar {
-            bar.set_style(spinner_progress_style());
-            bar.set_message(format!("{phase} {}", self.label));
+            bar.set_style(track_progress_style());
+            bar.set_prefix(phase.to_owned());
+            bar.set_message(self.status_message());
         }
     }
 
     fn start_download(&self, total_segments: usize) {
         if let Some(bar) = &self.bar {
-            bar.set_style(segment_progress_style());
+            bar.set_style(track_progress_style());
+            bar.set_prefix("download");
             bar.set_length(u64::try_from(total_segments).unwrap_or(u64::MAX));
             bar.set_position(0);
-            bar.set_message(self.download_message());
+            bar.set_message(self.status_message());
         }
     }
 
@@ -1141,19 +1139,17 @@ impl TrackProgress {
 
     fn finish_line(&self, prefix: &'static str) {
         if let Some(bar) = &self.bar {
-            bar.finish_and_clear();
-        }
-        let message = format!("{prefix}: {}", self.label);
-        if let Some(multi) = &self.multi {
-            let _ = multi.println(message);
+            bar.set_style(track_progress_style());
+            bar.set_prefix(prefix.to_owned());
+            bar.finish_with_message(self.status_message());
         } else {
-            eprintln!("{message}");
+            eprintln!("{prefix}: {}", self.label);
         }
     }
 
-    fn download_message(&self) -> String {
+    fn status_message(&self) -> String {
         let bytes = self.bytes_downloaded.load(Ordering::Relaxed);
-        format!("{} {}", HumanBytes(bytes), self.label)
+        format!("{:>12} {}", HumanBytes(bytes), truncate_label(&self.label))
     }
 }
 
@@ -1165,10 +1161,11 @@ impl DownloadProgress for TrackProgress {
         _content_length: Option<u64>,
     ) {
         if let Some(bar) = &self.bar {
-            bar.set_style(segment_progress_style());
+            bar.set_style(track_progress_style());
+            bar.set_prefix("download");
             bar.set_length(u64::try_from(total_segments).unwrap_or(u64::MAX));
             bar.set_position(u64::try_from(segment_index).unwrap_or(u64::MAX));
-            bar.set_message(self.download_message());
+            bar.set_message(self.status_message());
         }
     }
 
@@ -1176,7 +1173,7 @@ impl DownloadProgress for TrackProgress {
         self.bytes_downloaded
             .fetch_add(bytes_downloaded, Ordering::Relaxed);
         if let Some(bar) = &self.bar {
-            bar.set_message(self.download_message());
+            bar.set_message(self.status_message());
         }
     }
 
@@ -1184,7 +1181,7 @@ impl DownloadProgress for TrackProgress {
         if let Some(bar) = &self.bar {
             let position = u64::try_from(segment_index.saturating_add(1)).unwrap_or(u64::MAX);
             bar.set_position(position);
-            bar.set_message(self.download_message());
+            bar.set_message(self.status_message());
         }
     }
 }
@@ -1197,19 +1194,32 @@ fn display_path(root: &Path, final_path: &Path) -> String {
         .to_string()
 }
 
+fn truncate_label(label: &str) -> String {
+    const MAX_CHARS: usize = 72;
+    if label.chars().count() <= MAX_CHARS {
+        return label.to_owned();
+    }
+    let tail = label
+        .chars()
+        .rev()
+        .take(MAX_CHARS.saturating_sub(1))
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .collect::<String>();
+    format!("…{tail}")
+}
+
 fn overall_progress_style() -> ProgressStyle {
-    ProgressStyle::with_template("{prefix:.bold} [{bar:30.cyan/blue}] {pos}/{len} {msg}")
+    ProgressStyle::with_template("{prefix:>12.bold} [{bar:30.cyan/blue}] {pos:>3}/{len:<3} {msg}")
         .unwrap_or_else(|_| ProgressStyle::default_bar())
 }
 
-fn segment_progress_style() -> ProgressStyle {
-    ProgressStyle::with_template("{spinner:.green} [{bar:30.cyan/blue}] {pos}/{len} segments {msg}")
-        .unwrap_or_else(|_| ProgressStyle::default_bar())
-}
-
-fn spinner_progress_style() -> ProgressStyle {
-    ProgressStyle::with_template("{spinner:.green} {msg}")
-        .unwrap_or_else(|_| ProgressStyle::default_spinner())
+fn track_progress_style() -> ProgressStyle {
+    ProgressStyle::with_template(
+        "{prefix:>12} [{bar:30.cyan/blue}] {pos:>3}/{len:<3} segments {msg}",
+    )
+    .unwrap_or_else(|_| ProgressStyle::default_bar())
 }
 
 fn m3u_entry(
@@ -1504,6 +1514,16 @@ mod tests {
 
         assert!(claim_cover_sidecar(&cache, path).await);
         assert!(!claim_cover_sidecar(&cache, path).await);
+    }
+
+    #[test]
+    fn progress_label_truncates_from_left() {
+        let label = "Dream Theater/1992 - Images and Words/05 Metropolis - Part I The Miracle and the Sleeper.m4a";
+        let truncated = truncate_label(label);
+
+        assert!(truncated.starts_with('…'));
+        assert!(truncated.ends_with("Sleeper.m4a"));
+        assert_eq!(truncated.chars().count(), 72);
     }
 
     fn test_download_options(template: &str) -> Result<EffectiveDownloadOptions> {
