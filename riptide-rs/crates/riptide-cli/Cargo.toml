@@ -1,0 +1,17 @@
+[package]
+name = "riptide-rs"
+edition.workspace = true
+license.workspace = true
+version.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+clap.workspace = true
+riptide-config = { path = "../riptide-config" }
+riptide-core = { path = "../riptide-core" }
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[lints]
+workspace = true
