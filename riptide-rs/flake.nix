@@ -81,11 +81,15 @@
             pkgs.cargo-deny
           ];
           shellHook = ''
-            export SSL_CERT_FILE="${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt"
-            export GIT_SSL_CAINFO="${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt"
-            export NIX_SSL_CERT_FILE="${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt"
-            export CURL_CA_BUNDLE="${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt"
-            export CARGO_HTTP_CAINFO="${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt"
+            cert_file="${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt"
+            if [ -f "$HOME/.certs/root_bundle.pem" ]; then
+              cert_file="$HOME/.certs/root_bundle.pem"
+            fi
+            export SSL_CERT_FILE="$cert_file"
+            export GIT_SSL_CAINFO="$cert_file"
+            export NIX_SSL_CERT_FILE="$cert_file"
+            export CURL_CA_BUNDLE="$cert_file"
+            export CARGO_HTTP_CAINFO="$cert_file"
           '';
         });
       });
