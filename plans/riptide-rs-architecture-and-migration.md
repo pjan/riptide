@@ -180,6 +180,7 @@ pub struct ProviderExternalIdKind(String);
 pub struct BitDepth(u32);
 pub struct SampleRateHz(u32);
 pub struct ConcurrencyLimit(NonZeroUsize);
+pub struct MediaDuration(std::time::Duration);
 pub struct TrackNumber(u32);
 pub struct DiscNumber(u32);
 pub struct ItemCount(u32);
@@ -231,7 +232,7 @@ pub struct Track {
     pub title: String,
     pub artists: Vec<ArtistCredit>,
     pub album: Option<AlbumSummary>,
-    pub duration: Option<Duration>,
+    pub duration: Option<MediaDuration>,
     pub track_number: Option<TrackNumber>,
     pub disc_number: Option<DiscNumber>,
     pub explicit: Option<bool>,
@@ -244,7 +245,7 @@ pub struct Video {
     pub title: String,
     pub artists: Vec<ArtistCredit>,
     pub album: Option<AlbumSummary>,
-    pub duration: Option<Duration>,
+    pub duration: Option<MediaDuration>,
     pub track_number: Option<TrackNumber>,
     pub disc_number: Option<DiscNumber>,
     pub explicit: Option<bool>,
@@ -255,7 +256,7 @@ pub struct Album {
     pub id: MediaRef,
     pub title: String,
     pub artists: Vec<ArtistCredit>,
-    pub release_date: Option<Date>,
+    pub release_date: Option<time::Date>,
     pub track_count: Option<ItemCount>,
     pub video_count: Option<ItemCount>,
     pub explicit: Option<bool>,
@@ -267,15 +268,14 @@ pub struct Playlist {
     pub title: String,
     pub owner: Option<String>,
     pub item_count: Option<ItemCount>,
-    pub created_at: Option<DateTime>,
-    pub updated_at: Option<DateTime>,
+    pub created_at: Option<time::OffsetDateTime>,
+    pub updated_at: Option<time::OffsetDateTime>,
     pub extras: ProviderExtras,
 }
 
 pub struct Artist {
     pub id: Option<MediaRef>,
     pub name: String,
-    pub role: ArtistRole,
 }
 
 pub enum ArtistRole {
@@ -294,7 +294,6 @@ pub struct Collection {
 
 pub enum CollectionKind {
     AlbumFormat,
-    Playlist,
     Mix,
     ArtistDiscography,
     SearchResults,
@@ -316,14 +315,24 @@ Slice 1 should define the minimal public fields needed by later slices and leave
 provider-specific response details in `ProviderExtras`.
 
 `Artist.id` is optional because credits-only contributors may have a display
-name but no provider-resolvable artist reference.
+name but no provider-resolvable artist reference. Artist roles are contextual:
+use `ArtistCredit.role` for track, album, and credit roles rather than storing a
+role on `Artist` itself.
 
 `Collection` is a generic ordered container used when a provider has a group of
 items that is not semantically identical to a playlist or album.
 `CollectionKind::AlbumFormat` represents an album-format container such as an
 album, EP, single, or compilation when a provider returns it through a generic
-collection path. A TIDAL mix can normalize to `CollectionKind::Mix`. A future
+collection path. Provider-native playlists should normalize to
+`CatalogEntity::Playlist`, not `CollectionKind`; generic imported playlist-like
+data can become `CollectionKind::SearchResults` or a later explicit collection
+variant if needed. A TIDAL mix can normalize to `CollectionKind::Mix`. A future
 local folder can normalize to `CollectionKind::LocalFolder`.
+
+Use `time::Date` for release dates, `time::OffsetDateTime` for absolute
+timestamps, and `MediaDuration(std::time::Duration)` for media durations.
+`MediaDuration` keeps duration semantics explicit while allowing the core model
+to use Rust's standard monotonic duration type internally.
 
 "Download artist" means expanding an `Artist` into provider-selected child
 collections according to typed command/config filters. For TIDAL parity this
@@ -505,6 +514,8 @@ Likely crates:
 
 - `async-trait`
 - `serde`
+- `serde_json`
+- `time`
 - `url`
 - `thiserror`
 
