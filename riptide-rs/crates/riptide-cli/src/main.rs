@@ -439,17 +439,14 @@ async fn tidal_client(cli: &Cli) -> Result<TidalClient> {
     let cache = TidalApiCache::open(cache_file(cli)?)
         .await
         .context("failed to open TIDAL cache")?;
-    Ok(TidalClient::new(
-        cli.api_base_url.clone(),
-        auth,
-        token_store,
-        cache,
-    ))
+    TidalClient::try_new(cli.api_base_url.clone(), auth, token_store, cache)
+        .context("failed to build TIDAL API client")
 }
 
 fn auth_client(cli: &Cli) -> Result<TidalAuthClient> {
     let credentials = TidalCredentials::from_env().context("failed to load TIDAL credentials")?;
-    Ok(TidalAuthClient::new(cli.auth_base_url.clone(), credentials))
+    TidalAuthClient::try_new(cli.auth_base_url.clone(), credentials)
+        .context("failed to build TIDAL auth client")
 }
 
 fn auth_file(cli: &Cli) -> Result<PathBuf> {

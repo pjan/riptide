@@ -328,11 +328,20 @@ pub struct TidalAuthClient {
 impl TidalAuthClient {
     /// Creates an auth client.
     pub fn new(base_url: Url, credentials: TidalCredentials) -> Self {
-        Self {
+        Self::try_new(base_url.clone(), credentials.clone()).unwrap_or_else(|_| Self {
             client: reqwest::Client::new(),
             base_url,
             credentials,
-        }
+        })
+    }
+
+    /// Creates an auth client, loading extra PEM roots from certificate env vars.
+    pub fn try_new(base_url: Url, credentials: TidalCredentials) -> TidalResult<Self> {
+        Ok(Self {
+            client: crate::http::client()?,
+            base_url,
+            credentials,
+        })
     }
 
     /// Requests a device code.

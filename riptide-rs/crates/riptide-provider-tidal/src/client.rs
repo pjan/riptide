@@ -49,13 +49,35 @@ impl TidalClient {
         token_store: TidalTokenStore,
         cache: TidalApiCache,
     ) -> Self {
-        Self {
+        Self::try_new(
+            api_base_url.clone(),
+            auth.clone(),
+            token_store.clone(),
+            cache.clone(),
+        )
+        .unwrap_or_else(|_| Self {
             http: reqwest::Client::new(),
             api_base_url,
             auth,
             token_store,
             cache,
-        }
+        })
+    }
+
+    /// Creates a client, loading extra PEM roots from certificate env vars.
+    pub fn try_new(
+        api_base_url: Url,
+        auth: TidalAuthClient,
+        token_store: TidalTokenStore,
+        cache: TidalApiCache,
+    ) -> TidalResult<Self> {
+        Ok(Self {
+            http: crate::http::client()?,
+            api_base_url,
+            auth,
+            token_store,
+            cache,
+        })
     }
 
     /// Fetches session data.

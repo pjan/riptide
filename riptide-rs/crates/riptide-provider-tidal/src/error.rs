@@ -34,6 +34,13 @@ pub enum TidalError {
         source: reqwest::Error,
     },
 
+    /// HTTP client construction failed.
+    #[error("failed to build TIDAL HTTP client: {message}")]
+    HttpClient {
+        /// Explanation.
+        message: String,
+    },
+
     /// TIDAL returned an unsuccessful status.
     #[error("TIDAL API error during {operation}: status {status}: {message}")]
     Api {
@@ -119,6 +126,7 @@ impl TidalError {
             }
             Self::UnsupportedCapability { .. } => ProviderErrorKind::UnsupportedCapability,
             Self::Http { .. }
+            | Self::HttpClient { .. }
             | Self::CacheUnavailable { .. }
             | Self::Cache { .. }
             | Self::TokenStore { .. }

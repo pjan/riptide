@@ -5,6 +5,7 @@ pub mod cache;
 pub mod client;
 pub mod convert;
 pub mod error;
+mod http;
 pub mod model;
 pub mod provider;
 pub mod resource;
