@@ -1034,6 +1034,7 @@ impl DownloadProgressUi {
         };
         let multi = enabled.then(|| {
             let multi = MultiProgress::with_draw_target(ProgressDrawTarget::stderr_with_hz(10));
+            let _ = multi.println("");
             Arc::new(multi)
         });
         Self { multi }
@@ -1216,10 +1217,8 @@ fn overall_progress_style() -> ProgressStyle {
 }
 
 fn track_progress_style() -> ProgressStyle {
-    ProgressStyle::with_template(
-        "{prefix:>12} [{bar:30.cyan/blue}] {pos:>3}/{len:<3} segments {msg}",
-    )
-    .unwrap_or_else(|_| ProgressStyle::default_bar())
+    ProgressStyle::with_template("{prefix:>12} [{bar:30.cyan/blue}] {msg}")
+        .unwrap_or_else(|_| ProgressStyle::default_bar())
 }
 
 fn m3u_entry(
