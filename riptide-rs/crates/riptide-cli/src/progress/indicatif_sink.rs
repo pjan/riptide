@@ -12,10 +12,11 @@ use indicatif::{HumanBytes, MultiProgress, ProgressBar, ProgressDrawTarget, Prog
 use riptide_progress::{
     row::{phase_to_symbol, RowSymbol},
     ArtifactKind, DownloadEvent, DownloadPhase, ItemId, ItemOutcome, OperationConfig,
-    ProgressSink, ProgressState,
+    ProgressSink, ProgressState, QualitySymbol,
 };
 use std::{
     collections::HashMap,
+    io::IsTerminal,
     sync::{Mutex, MutexGuard, PoisonError},
     time::Instant,
 };
@@ -46,13 +47,8 @@ impl Default for RenderOpts {
 }
 
 /// Interactive indicatif sink.
-///
-/// Item bars stay in place when they complete (`finish_with_message`). The
-/// overall bar also stays. Artifact events are not shown during download;
-/// they appear only in the final summary.
 pub struct IndicatifSink {
     inner: Mutex<SinkInner>,
-    opts: RenderOpts,
 }
 
 struct SinkInner {
@@ -61,6 +57,8 @@ struct SinkInner {
     overall_bar: ProgressBar,
     item_bars: HashMap<ItemId, ProgressBar>,
     start: Instant,
+    symbols: SymbolSet,
+    colors: Colors,
 }
 
 impl IndicatifSink {
@@ -72,6 +70,10 @@ impl IndicatifSink {
         overall_bar.set_style(overall_style());
         overall_bar.set_prefix("overall");
         overall_bar.set_message(format_op_label(&config));
+
+        let symbols = resolve_symbols(opts.symbols);
+        let colors = Colors::resolve(opts.color);
+
         Self {
             inner: Mutex::new(SinkInner {
                 state: ProgressState::new(config),
@@ -79,8 +81,9 @@ impl IndicatifSink {
                 overall_bar,
                 item_bars: HashMap::new(),
                 start: Instant::now(),
+                symbols,
+                colors,
             }),
-            opts,
         }
     }
 
@@ -92,11 +95,10 @@ impl IndicatifSink {
 impl ProgressSink for IndicatifSink {
     #[allow(clippy::too_many_lines)]
     fn emit(&self, event: DownloadEvent) {
-        let symbols = resolve_symbols(self.opts.symbols);
         let mut inner = self.lock();
+        let symbols = inner.symbols;
+        let colors = inner.colors;
 
-        // Visual updates happen BEFORE state reduction so we can still read
-        // current item state from inner.state.items.
         match &event {
             // ── Item lifecycle ────────────────────────────────────────────
 
@@ -105,11 +107,11 @@ impl ProgressSink for IndicatifSink {
                 let bar = inner.multi.add(ProgressBar::new(1));
                 bar.set_style(item_style());
                 let op_kind = &inner.state.operation.kind;
-                bar.set_prefix(format!(
+                bar.set_prefix(colors.dim(&format!(
                     "{} {:<7}",
                     sym(symbols, RowSymbol::Queued),
                     "queued"
-                ));
+                )));
                 bar.set_message(format_item_msg("", "", &item_label(label, op_kind)));
                 inner.item_bars.insert(item_id, bar);
             }
@@ -120,7 +122,7 @@ impl ProgressSink for IndicatifSink {
                     let op_kind = &inner.state.operation.kind;
                     if let Some(item) = inner.state.items.get(&item_id) {
                         let label = item_label(&item.label, op_kind);
-                        let badge = badge_str(quality);
+                        let badge = colors.quality_badge(quality);
                         bar.set_message(format_item_msg("", &badge, &label));
                     }
                 }
@@ -129,11 +131,7 @@ impl ProgressSink for IndicatifSink {
             DownloadEvent::ItemPhaseChanged { item_id, phase } => {
                 let item_id = *item_id;
                 if let Some(bar) = inner.item_bars.get(&item_id) {
-                    bar.set_prefix(format!(
-                        "{} {:<7}",
-                        sym(symbols, phase_to_symbol(phase)),
-                        phase_label(phase)
-                    ));
+                    bar.set_prefix(colors.phase_prefix(symbols, phase));
                     if !matches!(phase, DownloadPhase::Downloading | DownloadPhase::Copying) {
                         bar.set_length(1);
                         bar.set_position(0);
@@ -144,7 +142,6 @@ impl ProgressSink for IndicatifSink {
             DownloadEvent::TransferUpdate { item_id, progress } => {
                 let item_id = *item_id;
                 if let Some(bar) = inner.item_bars.get(&item_id) {
-                    // Update bar position.
                     if let Some(total) = progress.bytes_total {
                         bar.set_length(total);
                         bar.set_position(progress.bytes_done);
@@ -152,16 +149,18 @@ impl ProgressSink for IndicatifSink {
                         bar.set_length(total);
                         bar.set_position(progress.segments_done);
                     }
-                    // Update message with byte info (segment-boundary only).
                     if let Some(item) = inner.state.items.get(&item_id) {
                         let op_kind = &inner.state.operation.kind;
                         let label = item_label(&item.label, op_kind);
                         let badge = item
                             .quality
                             .as_ref()
-                            .map(badge_str)
+                            .map(|q| colors.quality_badge(q))
                             .unwrap_or_default();
-                        let bytes = format_bytes(progress.bytes_done, progress.bytes_total);
+                        let bytes = colors.cyan(&format_bytes(
+                            progress.bytes_done,
+                            progress.bytes_total,
+                        ));
                         bar.set_message(format_item_msg(&bytes, &badge, &label));
                     }
                 }
@@ -170,30 +169,25 @@ impl ProgressSink for IndicatifSink {
             DownloadEvent::ItemFinished { item_id, outcome } => {
                 let item_id = *item_id;
                 if let Some(bar) = inner.item_bars.remove(&item_id) {
-                    // Build the final message with quality badge + label.
                     let msg = if let Some(item) = inner.state.items.get(&item_id) {
                         let op_kind = &inner.state.operation.kind;
                         let label = item_label(&item.label, op_kind);
                         let badge = item
                             .quality
                             .as_ref()
-                            .map(badge_str)
+                            .map(|q| colors.quality_badge(q))
                             .unwrap_or_default();
                         let detail = match outcome {
-                            ItemOutcome::Failed { message } => format!("  {message}"),
+                            ItemOutcome::Failed { message } => {
+                                format!("  {}", colors.red(message))
+                            }
                             _ => String::new(),
                         };
                         format_item_msg("", &badge, &format!("{label}{detail}"))
                     } else {
                         String::new()
                     };
-                    // Update prefix to done/exists/failed symbol.
-                    bar.set_prefix(format!(
-                        "{} {:<7}",
-                        sym(symbols, outcome_symbol(outcome)),
-                        outcome_label(outcome),
-                    ));
-                    // Fill the bar and keep it visible.
+                    bar.set_prefix(colors.outcome_prefix(symbols, outcome));
                     bar.set_length(1);
                     bar.set_position(1);
                     bar.finish_with_message(msg);
@@ -202,9 +196,8 @@ impl ProgressSink for IndicatifSink {
             }
 
             // ── Artifacts: silent during download ─────────────────────────
-            // Artifact events are reduced into state but produce no visual
-            // output. The summary printed on OperationFinished reports them.
-            DownloadEvent::ArtifactPhaseChanged { .. } | DownloadEvent::ArtifactFinished { .. } => {}
+            DownloadEvent::ArtifactPhaseChanged { .. }
+            | DownloadEvent::ArtifactFinished { .. } => {}
 
             // ── Operation finish ──────────────────────────────────────────
             DownloadEvent::OperationFinished { .. } => {
@@ -213,18 +206,16 @@ impl ProgressSink for IndicatifSink {
                     i64::try_from(elapsed_secs).unwrap_or(i64::MAX),
                     0,
                 );
-
-                // Reduce first so summary counts are accurate.
                 let _ = inner.state.reduce(event.clone());
                 let summary = inner.state.summary(Some(elapsed));
 
-                // Finish the overall bar in place (keep it visible).
                 inner.overall_bar.finish();
 
-                // Print summary below all the finished bars.
                 let total = summary.downloaded + summary.copied + summary.enriched;
                 if total > 0 {
-                    eprintln!("\nDownloaded {total} track(s) in {elapsed_secs}s");
+                    eprintln!(
+                        "\nDownloaded {total} track(s) in {elapsed_secs}s"
+                    );
                 }
                 for artifact in &summary.artifacts {
                     let k = artifact_kind_label(&artifact.kind);
@@ -235,13 +226,14 @@ impl ProgressSink for IndicatifSink {
                     }
                 }
                 if summary.failed > 0 {
-                    eprintln!("{} failed", summary.failed);
+                    eprintln!(
+                        "{}",
+                        colors.red(&format!("{} failed", summary.failed))
+                    );
                 }
-                // Skip the normal reduce at the bottom — we already reduced.
                 return;
             }
 
-            // ── Administrative ────────────────────────────────────────────
             DownloadEvent::OperationTotalsUpdated { total_items, .. } => {
                 if let Some(n) = total_items {
                     inner.overall_bar.set_length(*n);
@@ -255,12 +247,122 @@ impl ProgressSink for IndicatifSink {
     }
 }
 
-// ── Message formatting ────────────────────────────────────────────────────────
+// ── ANSI colour helpers ──────────────────────────────────────────────────────
 //
-// Every item bar message has three fixed-width columns:
-//   {bytes:>22} {badge:<14} {label}
-//
-// Bytes is empty for non-transfer phases, keeping the badge/label aligned.
+// Spec colour mapping:
+//   dl / active transfer → cyan
+//   queued, resolve      → dim
+//   tag, cover, lyrics, persist → yellow
+//   done                 → green
+//   exists               → yellow/dim
+//   failed               → red
+//   Lossless quality     → cyan
+//   Hi-res quality       → yellow/bold
+//   Low quality          → dim
+
+#[derive(Clone, Copy)]
+struct Colors {
+    enabled: bool,
+}
+
+impl Colors {
+    fn resolve(mode: ColorMode) -> Self {
+        let enabled = match mode {
+            ColorMode::Always => true,
+            ColorMode::Never => false,
+            ColorMode::Auto => std::io::stderr().is_terminal(),
+        };
+        Self { enabled }
+    }
+
+    fn green(self, s: &str) -> String {
+        self.wrap(s, "32")
+    }
+    fn cyan(self, s: &str) -> String {
+        self.wrap(s, "36")
+    }
+    fn yellow(self, s: &str) -> String {
+        self.wrap(s, "33")
+    }
+    fn red(self, s: &str) -> String {
+        self.wrap(s, "31")
+    }
+    fn dim(self, s: &str) -> String {
+        self.wrap(s, "2")
+    }
+    fn yellow_bold(self, s: &str) -> String {
+        self.wrap2(s, "33", "1")
+    }
+
+    fn wrap(self, s: &str, code: &str) -> String {
+        if self.enabled {
+            format!("\x1b[{code}m{s}\x1b[0m")
+        } else {
+            s.to_owned()
+        }
+    }
+
+    fn wrap2(self, s: &str, code1: &str, code2: &str) -> String {
+        if self.enabled {
+            format!("\x1b[{code1};{code2}m{s}\x1b[0m")
+        } else {
+            s.to_owned()
+        }
+    }
+
+    /// Colours a phase prefix (symbol + phase label) according to the spec.
+    fn phase_prefix(self, symbols: SymbolSet, phase: &DownloadPhase) -> String {
+        let raw = format!(
+            "{} {:<7}",
+            sym(symbols, phase_to_symbol(phase)),
+            phase_label(phase)
+        );
+        match phase {
+            DownloadPhase::Downloading | DownloadPhase::Copying => self.cyan(&raw),
+            DownloadPhase::Queued
+            | DownloadPhase::ResolvingMetadata
+            | DownloadPhase::ResolvingStream
+            | DownloadPhase::ResolvingMedia => self.dim(&raw),
+            DownloadPhase::Tagging
+            | DownloadPhase::Persisting
+            | DownloadPhase::WritingCover
+            | DownloadPhase::WritingLyrics
+            | DownloadPhase::WritingPlaylist
+            | DownloadPhase::PostProcessing => self.yellow(&raw),
+            _ => raw,
+        }
+    }
+
+    /// Colours an outcome prefix.
+    fn outcome_prefix(self, symbols: SymbolSet, outcome: &ItemOutcome) -> String {
+        let raw = format!(
+            "{} {:<7}",
+            sym(symbols, outcome_symbol(outcome)),
+            outcome_label(outcome)
+        );
+        match outcome {
+            ItemOutcome::Downloaded | ItemOutcome::Copied | ItemOutcome::Enriched => {
+                self.green(&raw)
+            }
+            ItemOutcome::Exists | ItemOutcome::Skipped { .. } => self.dim(&self.yellow(&raw)),
+            ItemOutcome::Failed { .. } => self.red(&raw),
+            _ => raw,
+        }
+    }
+
+    /// Colours a quality badge per the spec.
+    fn quality_badge(self, badge: &riptide_progress::QualityBadge) -> String {
+        let raw = format!("{} {}", badge.symbol_char(), badge.text);
+        match badge.symbol_kind {
+            QualitySymbol::Lossless => self.cyan(&raw),
+            QualitySymbol::HiRes => self.yellow_bold(&raw),
+            QualitySymbol::Low => self.dim(&raw),
+            _ => raw,
+        }
+    }
+}
+
+// ── Formatting helpers ──────────────────────────────────────────────────────
 
 fn format_item_msg(bytes: &str, badge: &str, label: &str) -> String {
     format!("{bytes:>22} {badge:<14} {label}")
@@ -299,10 +401,6 @@ fn item_label(
 fn is_collection_operation(kind: &riptide_progress::OperationKind) -> bool {
     use riptide_progress::OperationKind;
     !matches!(kind, OperationKind::Track | OperationKind::Video)
-}
-
-fn badge_str(badge: &riptide_progress::QualityBadge) -> String {
-    format!("{} {}", badge.symbol_char(), badge.text)
 }
 
 fn phase_label(phase: &DownloadPhase) -> &'static str {
@@ -398,15 +496,13 @@ trait QualityBadgeDisplay {
 
 impl QualityBadgeDisplay for riptide_progress::QualityBadge {
     fn symbol_char(&self) -> &'static str {
-        use riptide_progress::QualitySymbol;
         match self.symbol_kind {
             QualitySymbol::Low => "•",
             QualitySymbol::High => "▪",
             QualitySymbol::Lossless => "◇",
             QualitySymbol::HiRes => "◆",
             QualitySymbol::Video => "▣",
-            QualitySymbol::Unknown => "◇",
-            _ => "◇",
+            QualitySymbol::Unknown | _ => "◇",
         }
     }
 }
