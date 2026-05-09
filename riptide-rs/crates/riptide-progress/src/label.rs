@@ -5,7 +5,9 @@
 //! They are pure functions with no I/O.
 
 use crate::event::{DisplayLabel, QualityBadge, QualitySymbol};
-use riptide_core::{Album, AudioQuality, ResolvedQuality, StreamVariant, Track, TrackNumber, Video};
+use riptide_core::{
+    Album, AudioQuality, ResolvedQuality, StreamVariant, Track, TrackNumber, Video,
+};
 
 /// Builds a display label for a track.
 ///
@@ -53,9 +55,7 @@ pub fn quality_badge_for_stream(stream: &StreamVariant) -> Option<QualityBadge> 
                 riptide_core::VideoQuality::Low => "360p".to_owned(),
                 riptide_core::VideoQuality::Medium => "720p".to_owned(),
                 riptide_core::VideoQuality::High => "1080p".to_owned(),
-                riptide_core::VideoQuality::ProviderSpecific(label) => {
-                    label.as_str().to_owned()
-                }
+                riptide_core::VideoQuality::ProviderSpecific(label) => label.as_str().to_owned(),
             };
             (QualitySymbol::Video, text, None)
         }
@@ -215,9 +215,7 @@ mod tests {
         Ok(())
     }
 
-    fn make_stream(
-        quality: ResolvedQuality,
-    ) -> Result<StreamVariant, Box<dyn std::error::Error>> {
+    fn make_stream(quality: ResolvedQuality) -> Result<StreamVariant, Box<dyn std::error::Error>> {
         Ok(StreamVariant {
             source: make_media_ref()?,
             quality,

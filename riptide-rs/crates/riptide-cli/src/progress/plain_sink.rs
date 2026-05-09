@@ -79,9 +79,7 @@ impl ProgressSink for PlainSink {
                     0,
                 )));
                 let total = summary.downloaded + summary.copied + summary.enriched;
-                eprintln!(
-                    "\nDownloaded {total} item(s) in {elapsed_secs}s"
-                );
+                eprintln!("\nDownloaded {total} item(s) in {elapsed_secs}s");
             }
             // TransferUpdate and other high-frequency events: no output.
             _ => {}

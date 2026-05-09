@@ -21,7 +21,7 @@ pub use auth::{
     TokenStore,
 };
 pub use cache::{ApiCache, ApiCachePolicy, CacheEntryToWrite, CacheKey, RedbApiCache};
-pub use client::{SearchResults, TidalClient};
+pub use client::{ArtistAlbumSelection, SearchResults, TidalClient};
 pub use cover::{cover_url, CoverArtSize};
 pub use error::{TidalError, TidalResult};
 pub use provider::TidalProvider;

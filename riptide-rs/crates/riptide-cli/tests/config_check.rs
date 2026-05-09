@@ -11,7 +11,6 @@ fn config_check_succeeds_for_valid_fixture() -> Result<(), Box<dyn std::error::E
         r#"
         [download]
         audio_quality = "high"
-        video_quality = "high"
         skip_existing = true
 
         [listener]
@@ -39,7 +38,7 @@ fn config_check_fails_for_invalid_fixture_with_context() -> Result<(), Box<dyn s
         &path,
         r#"
         [download]
-        video_quality = "fhd"
+        audio_quality = "normal"
         "#,
     )?;
 
@@ -51,6 +50,6 @@ fn config_check_fails_for_invalid_fixture_with_context() -> Result<(), Box<dyn s
     assert!(!output.status.success());
     let stderr = String::from_utf8(output.stderr)?;
     assert!(stderr.contains("failed to validate config"));
-    assert!(stderr.contains("invalid config value at `download.video_quality`"));
+    assert!(stderr.contains("invalid config value at `download.audio_quality`"));
     Ok(())
 }

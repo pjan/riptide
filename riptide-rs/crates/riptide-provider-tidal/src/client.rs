@@ -11,8 +11,8 @@ use riptide_core::{
     StreamVariant, Track, Video, VideoQualityRequest,
 };
 use serde::de::DeserializeOwned;
-use std::sync::Arc;
 use std::time::Duration;
+use std::{collections::HashSet, sync::Arc};
 
 const DEFAULT_TTL: Duration = Duration::from_secs(3600);
 const DEFAULT_BACKOFF: Duration = Duration::from_secs(2);
@@ -33,6 +33,17 @@ pub struct SearchResults {
     pub artists: Vec<Artist>,
     /// Video results.
     pub videos: Vec<Video>,
+}
+
+/// TIDAL artist album endpoint selection.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ArtistAlbumSelection {
+    /// Fetch album releases only.
+    AlbumsOnly,
+    /// Fetch singles and EPs only.
+    SinglesAndEpsOnly,
+    /// Fetch both album and singles/EP endpoints.
+    AlbumsAndSingles,
 }
 
 /// TIDAL read-only API client.
@@ -90,6 +101,11 @@ impl TidalClient {
             self.get_json(&format!("playlists/{id}"), &[], ApiCachePolicy::Revalidate)
                 .await?,
         )
+    }
+
+    /// Fetches an artist.
+    pub async fn artist(&self, id: &str) -> TidalResult<Artist> {
+        convert::artist(self.get_json(&format!("artists/{id}"), &[], ttl()).await?)
     }
 
     /// Fetches lyrics.
@@ -153,16 +169,61 @@ impl TidalClient {
         match reference.kind {
             ResourceKind::Album => self.album_items(reference.id.as_str()).await,
             ResourceKind::Playlist => self.playlist_items(reference.id.as_str()).await,
+            ResourceKind::Artist => Ok(self
+                .artist_albums_all(reference.id.as_str())
+                .await?
+                .into_iter()
+                .map(CatalogEntity::Album)
+                .collect()),
+            ResourceKind::Mix => self.mix_items(reference.id.as_str()).await,
             kind => Err(TidalError::UnsupportedCapability {
                 capability: match kind {
                     ResourceKind::Track => "track children",
                     ResourceKind::Video => "video children",
-                    ResourceKind::Artist => "artist children",
-                    ResourceKind::Mix => "mix children",
-                    ResourceKind::Album | ResourceKind::Playlist => unreachable!(),
+                    ResourceKind::Album
+                    | ResourceKind::Playlist
+                    | ResourceKind::Artist
+                    | ResourceKind::Mix => unreachable!(),
                 },
             }),
         }
+    }
+
+    /// Paginates artist albums.
+    pub async fn artist_albums(&self, id: &str) -> TidalResult<Vec<Album>> {
+        self.paged_albums(&format!("artists/{id}/albums"), "ALBUMS")
+            .await
+    }
+
+    /// Paginates artist singles and EPs.
+    pub async fn artist_singles(&self, id: &str) -> TidalResult<Vec<Album>> {
+        self.paged_albums(&format!("artists/{id}/albums"), "EPSANDSINGLES")
+            .await
+    }
+
+    pub(crate) async fn artist_albums_all(&self, id: &str) -> TidalResult<Vec<Album>> {
+        let albums = self.artist_albums(id).await?;
+        let singles = self.artist_singles(id).await?;
+        Ok(deduplicate_albums_by_id(
+            albums.into_iter().chain(singles.into_iter()),
+        ))
+    }
+
+    pub(crate) async fn artist_albums_for_selection(
+        &self,
+        id: &str,
+        selection: ArtistAlbumSelection,
+    ) -> TidalResult<Vec<Album>> {
+        match selection {
+            ArtistAlbumSelection::AlbumsOnly => self.artist_albums(id).await,
+            ArtistAlbumSelection::SinglesAndEpsOnly => self.artist_singles(id).await,
+            ArtistAlbumSelection::AlbumsAndSingles => self.artist_albums_all(id).await,
+        }
+    }
+
+    /// Paginates mix items.
+    pub async fn mix_items(&self, id: &str) -> TidalResult<Vec<CatalogEntity>> {
+        self.paged_items(&format!("mixes/{id}/items"), 20).await
     }
 
     async fn album_items(&self, id: &str) -> TidalResult<Vec<CatalogEntity>> {
@@ -171,6 +232,33 @@ impl TidalClient {
 
     async fn playlist_items(&self, id: &str) -> TidalResult<Vec<CatalogEntity>> {
         self.paged_items(&format!("playlists/{id}/items"), 20).await
+    }
+
+    async fn paged_albums(&self, endpoint: &str, filter: &str) -> TidalResult<Vec<Album>> {
+        let mut offset = 0;
+        let limit = 20;
+        let mut output = Vec::new();
+        loop {
+            let params = vec![
+                ("filter".to_owned(), filter.to_owned()),
+                ("limit".to_owned(), limit.to_string()),
+                ("offset".to_owned(), offset.to_string()),
+            ];
+            let page: model::Items<model::TidalAlbum> =
+                self.get_json(endpoint, &params, ttl()).await?;
+            let count = page.items.len();
+            output.extend(
+                page.items
+                    .into_iter()
+                    .map(convert::album)
+                    .collect::<TidalResult<Vec<_>>>()?,
+            );
+            if count < usize::try_from(limit).unwrap_or(usize::MAX) {
+                break;
+            }
+            offset += limit;
+        }
+        Ok(output)
     }
 
     async fn paged_items(&self, endpoint: &str, limit: u32) -> TidalResult<Vec<CatalogEntity>> {
@@ -420,6 +508,17 @@ fn convert_catalog_item(value: &serde_json::Value) -> TidalResult<CatalogEntity>
         .map(CatalogEntity::Track)
 }
 
+fn deduplicate_albums_by_id(albums: impl IntoIterator<Item = Album>) -> Vec<Album> {
+    let mut seen = HashSet::new();
+    let mut deduplicated = Vec::new();
+    for album in albums {
+        if seen.insert(album.id.clone()) {
+            deduplicated.push(album);
+        }
+    }
+    deduplicated
+}
+
 const fn ttl() -> ApiCachePolicy {
     ApiCachePolicy::Ttl(DEFAULT_TTL)
 }
@@ -444,4 +543,46 @@ async fn response_json(
         operation: "api json",
         source,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use riptide_core::{ArtistCredit, ResourceId};
+
+    #[test]
+    fn album_deduplication_preserves_first_seen_order() -> TidalResult<()> {
+        let albums = deduplicate_albums_by_id(vec![
+            album("1", "First")?,
+            album("2", "Second")?,
+            album("1", "Duplicate")?,
+        ]);
+
+        assert_eq!(albums.len(), 2);
+        assert_eq!(albums[0].title, "First");
+        assert_eq!(albums[1].title, "Second");
+        Ok(())
+    }
+
+    fn album(id: &str, title: &str) -> TidalResult<Album> {
+        Ok(Album {
+            id: MediaRef::new(
+                TIDAL_PROVIDER_ID.clone(),
+                ResourceKind::Album,
+                ResourceId::new(id).map_err(|error| TidalError::InvalidValue {
+                    field: "id",
+                    message: error.to_string(),
+                })?,
+            ),
+            title: title.to_owned(),
+            artists: Vec::<ArtistCredit>::new(),
+            release_date: None,
+            track_count: None,
+            video_count: None,
+            explicit: None,
+            release_type: None,
+            hires_lossless: false,
+            cover: None,
+        })
+    }
 }

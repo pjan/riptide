@@ -22,8 +22,6 @@ pub struct RawConfig {
 pub struct RawDownloadConfig {
     /// Requested audio quality.
     pub audio_quality: String,
-    /// Requested video quality.
-    pub video_quality: String,
     /// Skip existing files.
     pub skip_existing: bool,
     /// Download concurrency.
@@ -32,8 +30,6 @@ pub struct RawDownloadConfig {
     pub download_root: Option<String>,
     /// Singles handling mode.
     pub singles_mode: String,
-    /// Videos handling mode.
-    pub videos_mode: String,
     /// Template configuration.
     pub templates: RawTemplateConfig,
 }
@@ -42,12 +38,10 @@ impl Default for RawDownloadConfig {
     fn default() -> Self {
         Self {
             audio_quality: "high".to_owned(),
-            video_quality: "high".to_owned(),
             skip_existing: true,
             concurrency: 4,
             download_root: None,
             singles_mode: "include".to_owned(),
-            videos_mode: "include".to_owned(),
             templates: RawTemplateConfig::default(),
         }
     }
@@ -61,8 +55,6 @@ pub struct RawTemplateConfig {
     pub default: String,
     /// Optional track override.
     pub track: Option<String>,
-    /// Optional video override.
-    pub video: Option<String>,
     /// Optional album override.
     pub album: Option<String>,
     /// Optional playlist override.
@@ -76,7 +68,6 @@ impl Default for RawTemplateConfig {
                 "{album.artists}/{album.date:%Y} - {album.title}/{item.number:02d} {item.title}"
                     .to_owned(),
             track: None,
-            video: None,
             album: None,
             playlist: None,
         }

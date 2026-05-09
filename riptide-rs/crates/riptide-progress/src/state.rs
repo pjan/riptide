@@ -328,7 +328,10 @@ impl ProgressState {
                     .ok_or(ProgressError::UnknownItem(item_id))?;
                 item.phase = phase;
                 // Clear stale transfer data when leaving a transfer phase.
-                if !matches!(item.phase, DownloadPhase::Downloading | DownloadPhase::Copying) {
+                if !matches!(
+                    item.phase,
+                    DownloadPhase::Downloading | DownloadPhase::Copying
+                ) {
                     item.transfer = None;
                 }
             }
@@ -536,10 +539,7 @@ mod tests {
         }
     }
 
-    fn track_label(
-        title: &str,
-        n: u32,
-    ) -> Result<DisplayLabel, Box<dyn std::error::Error>> {
+    fn track_label(title: &str, n: u32) -> Result<DisplayLabel, Box<dyn std::error::Error>> {
         Ok(DisplayLabel {
             title: title.to_owned(),
             artist: Some("Dream Theater".to_owned()),

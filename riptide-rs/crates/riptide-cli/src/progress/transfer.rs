@@ -11,9 +11,7 @@
 //! Byte-level numeric state is read by the sink at its own throttled cadence.
 
 use riptide_media::DownloadProgress;
-use riptide_progress::{
-    DownloadEvent, ItemId, ProgressSink, TransferMode, TransferProgress,
-};
+use riptide_progress::{DownloadEvent, ItemId, ProgressSink, TransferMode, TransferProgress};
 use std::sync::{
     atomic::{AtomicU64, Ordering},
     Arc,
@@ -74,8 +72,7 @@ impl DownloadProgress for MediaTransferProgress {
         total_segments: usize,
         content_length: Option<u64>,
     ) {
-        let total =
-            u64::try_from(total_segments).unwrap_or(u64::MAX);
+        let total = u64::try_from(total_segments).unwrap_or(u64::MAX);
         self.segments_total.store(total, Ordering::Relaxed);
 
         // For a single-segment download with a known Content-Length, store the
@@ -99,8 +96,7 @@ impl DownloadProgress for MediaTransferProgress {
     }
 
     fn on_segment_complete(&self, segment_index: usize, _total_segments: usize) {
-        let done =
-            u64::try_from(segment_index.saturating_add(1)).unwrap_or(u64::MAX);
+        let done = u64::try_from(segment_index.saturating_add(1)).unwrap_or(u64::MAX);
         self.segments_done.store(done, Ordering::Relaxed);
         self.emit_update();
     }

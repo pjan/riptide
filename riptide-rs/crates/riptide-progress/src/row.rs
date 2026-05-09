@@ -12,8 +12,8 @@
 //! - [`Vec<CompletionRow>`] — finished items, artifacts, and groups
 
 use crate::event::{
-    ArtifactKind, ArtifactOutcome, DisplayLabel, DownloadPhase, GroupOutcome,
-    ItemOutcome, OperationKind, QualityBadge, TransferProgress,
+    ArtifactKind, ArtifactOutcome, DisplayLabel, DownloadPhase, GroupOutcome, ItemOutcome,
+    OperationKind, QualityBadge, TransferProgress,
 };
 use crate::state::{CompletedRecord, ProgressState};
 use std::path::PathBuf;

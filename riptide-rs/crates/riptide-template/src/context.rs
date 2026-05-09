@@ -103,6 +103,58 @@ impl TemplateContext {
         self
     }
 
+    /// Creates a fully populated synthetic context for template prevalidation.
+    pub fn synthetic() -> Self {
+        let now = time::OffsetDateTime::UNIX_EPOCH;
+        let date = time::Date::from_calendar_date(2024, time::Month::January, 15)
+            .unwrap_or_else(|_| unreachable!("literal date is valid"));
+        let playlist_time = time::OffsetDateTime::from_unix_timestamp(1_704_108_000)
+            .unwrap_or_else(|_| unreachable!("literal timestamp is valid"));
+        let mut context = Self::new(now)
+            .with_item_input(ItemTemplateInput {
+                kind: "track".to_owned(),
+                id: "track-id".to_owned(),
+                title: "Track Title".to_owned(),
+                number: 1,
+                volume: 1,
+                version: "Radio Edit".to_owned(),
+                copyright: "2024 Label".to_owned(),
+                bpm: 120,
+                isrc: "USRC12345678".to_owned(),
+                quality: "LOSSLESS".to_owned(),
+                artist: "Artist".to_owned(),
+                artists: "Artist".to_owned(),
+                features: "Featured".to_owned(),
+                artists_with_features: "Artist, Featured".to_owned(),
+                explicit: Some(true),
+                dolby: true,
+            })
+            .with_album_input(AlbumTemplateInput {
+                id: "album-id".to_owned(),
+                title: "Album Title".to_owned(),
+                artist: "Artist".to_owned(),
+                artists: "Artist".to_owned(),
+                date: Some(date),
+                explicit: Some(false),
+                master: true,
+                release: "ALBUM".to_owned(),
+            })
+            .with_playlist_input(PlaylistTemplateInput {
+                uuid: "playlist-id".to_owned(),
+                title: "Playlist Title".to_owned(),
+                index: 1,
+                created: Some(playlist_time),
+                updated: Some(playlist_time),
+            });
+        if let Some(name) = ExtraFieldName::new("type") {
+            context = context.with_extra(name, TemplateValue::Text(Cow::Borrowed("track")));
+        }
+        if let Some(name) = ExtraFieldName::new("mix_id") {
+            context = context.with_extra(name, TemplateValue::Text(Cow::Borrowed("mix-id")));
+        }
+        context
+    }
+
     /// Returns the `now` value.
     pub const fn now(&self) -> time::OffsetDateTime {
         self.now

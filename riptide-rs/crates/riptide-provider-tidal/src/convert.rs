@@ -26,6 +26,17 @@ fn media_ref(kind: ResourceKind, id: &impl ToString) -> TidalResult<MediaRef> {
     ))
 }
 
+/// Converts a TIDAL artist.
+pub fn artist(artist: TidalArtist) -> TidalResult<Artist> {
+    Ok(Artist {
+        id: artist
+            .id
+            .map(|id| media_ref(ResourceKind::Artist, &id))
+            .transpose()?,
+        name: artist.name,
+    })
+}
+
 /// Converts a TIDAL track.
 pub fn track(track: TidalTrack) -> TidalResult<Track> {
     let mut external = BTreeMap::new();

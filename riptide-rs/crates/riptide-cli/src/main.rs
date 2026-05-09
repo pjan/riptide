@@ -10,29 +10,27 @@ use progress::{
     PlainSink, ProgressDetail, SymbolsMode,
 };
 use riptide_config::{
-    Concurrency, DownloadConfig, M3uConfig, MetadataConfig, ValidatedConfig, VideosMode,
+    Concurrency, DownloadConfig, M3uConfig, MetadataConfig, SinglesMode, ValidatedConfig,
 };
 use riptide_core::{
-    Album, AudioQualityRequest, CatalogEntity, CollectionProvider, CoverArtId, LyricsProvider,
-    MediaDuration, MediaRef, ProviderQualityLabel, QualityRequest, Resolver, StreamProvider, Track,
-    Video,
+    Album, AudioQualityRequest, CatalogEntity, CollectionKind, CollectionProvider, CoverArtId,
+    LyricsProvider, MediaDuration, MediaRef, ProviderQualityLabel, QualityRequest, Resolver,
+    StreamProvider, Track,
 };
 use riptide_media::{
     download_segments, plan_download, post_process, resolve_manifest_async, DownloadOptions,
 };
 use riptide_metadata::{
-    metadata_from_track, metadata_from_video, save_cover, write_lyrics_sidecar, write_m3u,
-    write_tags, M3uEntry,
+    metadata_from_track, save_cover, write_lyrics_sidecar, write_m3u, write_tags, M3uEntry,
 };
 use riptide_progress::{
-    label::{label_for_album, label_for_track, label_for_video, quality_badge_for_stream},
+    label::{label_for_album, label_for_track, quality_badge_for_stream},
     ArtifactKind, ArtifactOutcome, DisplayLabel, DownloadEvent, DownloadPhase, ItemId, ItemKind,
-    ItemOutcome, OperationConfig, OperationId, OperationKind,
-    ProgressIdAllocator, ProgressSink,
+    ItemOutcome, OperationConfig, OperationId, OperationKind, ProgressIdAllocator, ProgressSink,
 };
 use riptide_provider_tidal::{
-    cover_url, CoverArtSize, FileTokenStore, HttpClient, RedbApiCache, TidalAuthClient,
-    TidalClient, TidalCredentials, TidalError, TidalProvider, TokenStore,
+    cover_url, ArtistAlbumSelection, CoverArtSize, FileTokenStore, HttpClient, RedbApiCache,
+    TidalAuthClient, TidalClient, TidalCredentials, TidalError, TidalProvider, TokenStore,
 };
 use riptide_template::{
     context_from_fixture_str, CompiledTemplate, TemplateContext, TemplateRenderOptions,
@@ -44,6 +42,7 @@ use std::{
     path::{Path, PathBuf},
     sync::Arc,
 };
+use tokio::task::JoinSet;
 use url::Url;
 
 const DEFAULT_AUTH_BASE_URL: &str = "https://auth.tidal.com/v1/oauth2/";
@@ -187,9 +186,9 @@ struct DownloadArgs {
     /// Override audio quality.
     #[arg(long)]
     audio_quality: Option<String>,
-    /// Override video quality.
-    #[arg(long)]
-    video_quality: Option<String>,
+    /// Override artist singles handling.
+    #[arg(long, value_enum)]
+    singles: Option<SinglesModeArg>,
     /// Override output template.
     #[arg(long)]
     output: Option<String>,
@@ -205,6 +204,9 @@ struct DownloadArgs {
     /// Metadata behavior.
     #[command(flatten)]
     metadata: MetadataFlags,
+    /// Error behavior.
+    #[command(flatten)]
+    errors: ErrorFlags,
     /// Progress display mode.
     #[arg(long, value_enum, default_value = "auto")]
     progress: ProgressMode,
@@ -220,6 +222,27 @@ struct DownloadArgs {
     /// ANSI colour mode.
     #[arg(long, value_enum, default_value = "auto")]
     color: ColorMode,
+}
+
+/// Singles handling override.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+enum SinglesModeArg {
+    /// Include albums, singles, and EPs.
+    Include,
+    /// Exclude singles and EPs from artist downloads.
+    Exclude,
+    /// Download only singles and EPs from artist downloads.
+    Only,
+}
+
+impl From<SinglesModeArg> for SinglesMode {
+    fn from(value: SinglesModeArg) -> Self {
+        match value {
+            SinglesModeArg::Include => Self::Include,
+            SinglesModeArg::Exclude => Self::Exclude,
+            SinglesModeArg::Only => Self::Only,
+        }
+    }
 }
 
 /// Existing-file flags.
@@ -247,6 +270,14 @@ struct MetadataFlags {
     no_cover: bool,
 }
 
+/// Error behavior flags.
+#[derive(Debug, Args)]
+struct ErrorFlags {
+    /// Continue downloading when individual items fail.
+    #[arg(long)]
+    skip_errors: bool,
+}
+
 /// Download progress display mode.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 enum ProgressMode {
@@ -262,13 +293,103 @@ enum ProgressMode {
 struct EffectiveDownloadOptions {
     root: PathBuf,
     audio_quality: riptide_core::AudioQualityRequest,
-    video_quality: riptide_core::VideoQualityRequest,
     skip_existing: bool,
     concurrency: usize,
     template: CompiledTemplate,
     metadata: MetadataConfig,
     m3u: M3uConfig,
-    videos_mode: VideosMode,
+    singles_mode: SinglesMode,
+    skip_errors: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AlbumType {
+    Album,
+    Single,
+    Ep,
+    Unknown,
+}
+
+impl AlbumType {
+    fn from_release_type(release_type: Option<&str>) -> Self {
+        match release_type {
+            Some("ALBUM" | "COMPILATION") => Self::Album,
+            Some("SINGLE") => Self::Single,
+            Some("EP") => Self::Ep,
+            _ => Self::Unknown,
+        }
+    }
+
+    const fn is_single_or_ep(self) -> bool {
+        matches!(self, Self::Single | Self::Ep)
+    }
+}
+
+#[derive(Debug, Default)]
+struct ExpansionResult {
+    items: Vec<(CatalogEntity, Option<Album>)>,
+    summary: DownloadSummary,
+}
+
+#[derive(Debug, Default, Clone)]
+struct DownloadSummary {
+    downloaded: usize,
+    skipped: usize,
+    failed_items: usize,
+    failed_expansions: usize,
+    failure_messages: Vec<String>,
+}
+
+impl DownloadSummary {
+    fn merge(&mut self, other: Self) {
+        self.downloaded += other.downloaded;
+        self.skipped += other.skipped;
+        self.failed_items += other.failed_items;
+        self.failed_expansions += other.failed_expansions;
+        self.failure_messages.extend(other.failure_messages);
+    }
+
+    const fn has_failures(&self) -> bool {
+        self.failed_items > 0 || self.failed_expansions > 0
+    }
+}
+
+struct ScheduledDownload {
+    index: usize,
+    entity: CatalogEntity,
+    item_ref: MediaRef,
+    parent_album: Option<Album>,
+    item_id: ItemId,
+    operation_id: OperationId,
+    item_label: DisplayLabel,
+}
+
+struct DownloadTaskOutput {
+    index: usize,
+    completion: ItemCompletion,
+}
+
+struct DownloadTaskFailure {
+    item_id: ItemId,
+    item_label: DisplayLabel,
+    item_ref: MediaRef,
+    error: anyhow::Error,
+}
+
+impl DownloadTaskFailure {
+    fn message(&self) -> String {
+        format!(
+            "{} ({}) failed: {:#}",
+            display_label_text(&self.item_label),
+            media_ref_label(&self.item_ref),
+            self.error
+        )
+    }
+}
+
+enum ItemCompletion {
+    Downloaded(Option<M3uEntry>),
+    Skipped(Option<M3uEntry>),
 }
 
 /// Shared single-resource list options.
@@ -305,7 +426,18 @@ async fn main() -> Result<()> {
         Command::Template { command } => run_template(command),
         Command::Auth { command } => run_auth(&options, command).await,
         Command::List { command } => run_list(&options, command).await,
-        Command::Download(args) => run_download(&options, args).await,
+        Command::Download(args) => {
+            let summary = run_download(&options, args).await?;
+            if summary.has_failures() {
+                eprintln!(
+                    "download completed with {} failed item(s) and {} failed expansion(s)",
+                    summary.failed_items, summary.failed_expansions
+                );
+                print_failure_messages(&summary.failure_messages, 20);
+                std::process::exit(1);
+            }
+            Ok(())
+        }
     }
 }
 
@@ -512,7 +644,7 @@ async fn run_list(options: &SharedOptions, command: ListCommand) -> Result<()> {
     }
 }
 
-async fn run_download(options: &SharedOptions, args: DownloadArgs) -> Result<()> {
+async fn run_download(options: &SharedOptions, args: DownloadArgs) -> Result<DownloadSummary> {
     if args.urls.is_empty() {
         anyhow::bail!("at least one URL or resource reference is required");
     }
@@ -520,6 +652,7 @@ async fn run_download(options: &SharedOptions, args: DownloadArgs) -> Result<()>
     let effective =
         effective_download_options(&config.download, config.metadata, config.m3u, &args)
             .context("failed to build effective download options")?;
+    prevalidate_template(&effective.template)?;
     fs::create_dir_all(&effective.root).with_context(|| {
         format!(
             "failed to create download root {}",
@@ -529,7 +662,6 @@ async fn run_download(options: &SharedOptions, args: DownloadArgs) -> Result<()>
 
     let provider = TidalProvider::new(tidal_client(options).await?);
     let http = http_client()?;
-    let semaphore = Arc::new(tokio::sync::Semaphore::new(effective.concurrency));
     let cover_cache = Arc::new(tokio::sync::Mutex::new(CoverCacheState::default()));
     let alloc = ProgressIdAllocator::new();
     let render_opts = RenderOpts {
@@ -538,7 +670,9 @@ async fn run_download(options: &SharedOptions, args: DownloadArgs) -> Result<()>
         symbols: args.symbols,
         color: args.color,
     };
-    let mut m3u_entries = Vec::new();
+    let mut m3u_entries: Vec<(usize, M3uEntry)> = Vec::new();
+    let mut summary = DownloadSummary::default();
+    let mut next_index = 0usize;
 
     for input in &args.urls {
         let Some(reference) = provider
@@ -552,17 +686,20 @@ async fn run_download(options: &SharedOptions, args: DownloadArgs) -> Result<()>
             .resolve(&reference)
             .await
             .with_context(|| format!("failed to resolve `{input}`"))?;
-        let parent_album = match &entity {
-            CatalogEntity::Album(album) => Some(album.clone()),
-            _ => None,
-        };
 
         let (op_kind, op_label) = operation_kind_and_label(&entity, input);
-        let children = expand_download_entities(&provider, &reference, entity).await?;
-        let children = children
-            .into_iter()
-            .filter(|entity| !should_skip_entity(entity, effective.videos_mode))
-            .collect::<Vec<_>>();
+        let expansion = expand_download_entities(
+            &provider,
+            &reference,
+            entity,
+            effective.singles_mode,
+            effective.skip_errors,
+        )
+        .await?;
+        summary.merge(expansion.summary);
+        if expansion.items.is_empty() {
+            continue;
+        }
 
         let op_id = alloc.next_operation_id();
         let op_config = OperationConfig {
@@ -570,13 +707,14 @@ async fn run_download(options: &SharedOptions, args: DownloadArgs) -> Result<()>
             kind: op_kind,
             label: op_label,
             total_groups: None,
-            total_items: Some(children.len() as u64),
+            total_items: Some(expansion.items.len() as u64),
         };
 
-        let sink: Arc<dyn ProgressSink> = create_progress_sink(op_config, args.progress, render_opts);
-        let mut handles = Vec::new();
+        let sink: Arc<dyn ProgressSink> =
+            create_progress_sink(op_config, args.progress, render_opts);
+        let mut scheduled = Vec::new();
 
-        for entity in children {
+        for (entity, parent_album) in expansion.items {
             let item_id = alloc.next_item_id();
             let (item_kind, item_label) = item_kind_and_label(&entity);
             sink.emit(DownloadEvent::ItemQueued {
@@ -584,55 +722,51 @@ async fn run_download(options: &SharedOptions, args: DownloadArgs) -> Result<()>
                 group_id: None,
                 item_id,
                 kind: item_kind,
-                label: item_label,
+                label: item_label.clone(),
                 quality: None,
             });
-
-            let provider = provider.clone();
-            let http = http.clone();
-            let options = effective.clone();
-            let semaphore = Arc::clone(&semaphore);
-            let cover_cache = Arc::clone(&cover_cache);
-            let parent_album = parent_album.clone();
-            let sink = Arc::clone(&sink);
-            handles.push(tokio::spawn(async move {
-                let _permit = semaphore
-                    .acquire_owned()
-                    .await
-                    .context("download semaphore was closed")?;
-                download_entity(
-                    &provider,
-                    &http,
-                    &options,
-                    &cover_cache,
-                    parent_album.as_ref(),
-                    &entity,
-                    item_id,
-                    op_id,
-                    &sink,
-                )
-                .await
-            }));
-        }
-
-        for handle in handles {
-            let Some(entry) = handle.await.context("download task panicked")?? else {
+            let Some(item_ref) = media_ref_for_entity(&entity).cloned() else {
                 continue;
             };
-            m3u_entries.push(entry);
+            scheduled.push(ScheduledDownload {
+                index: next_index,
+                entity,
+                item_ref,
+                parent_album,
+                item_id,
+                operation_id: op_id,
+                item_label,
+            });
+            next_index += 1;
         }
 
+        let operation_entries = run_scheduled_downloads(
+            scheduled,
+            &provider,
+            &http,
+            &effective,
+            &cover_cache,
+            &sink,
+            &mut summary,
+        )
+        .await?;
+        m3u_entries.extend(operation_entries);
         sink.emit(DownloadEvent::OperationFinished { id: op_id });
     }
 
     if effective.m3u.save && !m3u_entries.is_empty() {
+        m3u_entries.sort_by_key(|(index, _)| *index);
+        let m3u_entries = m3u_entries
+            .into_iter()
+            .map(|(_, entry)| entry)
+            .collect::<Vec<_>>();
         let output = effective.root.join("riptide.m3u");
         tokio::task::spawn_blocking(move || write_m3u(&m3u_entries, &output))
             .await
             .context("failed to join M3U writer")?
             .context("failed to write M3U playlist")?;
     }
-    Ok(())
+    Ok(summary)
 }
 
 fn create_progress_sink(
@@ -652,10 +786,212 @@ fn create_progress_sink(
     }
 }
 
-fn operation_kind_and_label(entity: &CatalogEntity, fallback_input: &str) -> (OperationKind, DisplayLabel) {
+async fn run_scheduled_downloads(
+    scheduled: Vec<ScheduledDownload>,
+    provider: &TidalProvider,
+    http: &HttpClient,
+    options: &EffectiveDownloadOptions,
+    cover_cache: &CoverCache,
+    sink: &Arc<dyn ProgressSink>,
+    summary: &mut DownloadSummary,
+) -> Result<Vec<(usize, M3uEntry)>> {
+    let mut pending = scheduled.into_iter();
+    let mut in_flight = JoinSet::new();
+    let mut entries = Vec::new();
+
+    fill_download_queue(
+        &mut in_flight,
+        &mut pending,
+        provider,
+        http,
+        options,
+        cover_cache,
+        sink,
+    );
+
+    while let Some(result) = in_flight.join_next().await {
+        match result.context("download task panicked")? {
+            Ok(output) => {
+                match output.completion {
+                    ItemCompletion::Downloaded(entry) => {
+                        summary.downloaded += 1;
+                        if let Some(entry) = entry {
+                            entries.push((output.index, entry));
+                        }
+                    }
+                    ItemCompletion::Skipped(entry) => {
+                        summary.skipped += 1;
+                        if let Some(entry) = entry {
+                            entries.push((output.index, entry));
+                        }
+                    }
+                }
+                fill_download_queue(
+                    &mut in_flight,
+                    &mut pending,
+                    provider,
+                    http,
+                    options,
+                    cover_cache,
+                    sink,
+                );
+            }
+            Err(failure) if options.skip_errors => {
+                summary.failed_items += 1;
+                let message = failure.message();
+                summary.failure_messages.push(message.clone());
+                sink.emit(DownloadEvent::ItemFinished {
+                    item_id: failure.item_id,
+                    outcome: ItemOutcome::Failed { message },
+                });
+                fill_download_queue(
+                    &mut in_flight,
+                    &mut pending,
+                    provider,
+                    http,
+                    options,
+                    cover_cache,
+                    sink,
+                );
+            }
+            Err(failure) => {
+                in_flight.abort_all();
+                return Err(failure.error).with_context(|| {
+                    format!(
+                        "{} ({}) failed",
+                        display_label_text(&failure.item_label),
+                        media_ref_label(&failure.item_ref)
+                    )
+                });
+            }
+        }
+    }
+
+    Ok(entries)
+}
+
+fn fill_download_queue(
+    in_flight: &mut JoinSet<std::result::Result<DownloadTaskOutput, DownloadTaskFailure>>,
+    pending: &mut std::vec::IntoIter<ScheduledDownload>,
+    provider: &TidalProvider,
+    http: &HttpClient,
+    options: &EffectiveDownloadOptions,
+    cover_cache: &CoverCache,
+    sink: &Arc<dyn ProgressSink>,
+) {
+    while in_flight.len() < options.concurrency {
+        let Some(scheduled) = pending.next() else {
+            break;
+        };
+        let provider = provider.clone();
+        let http = http.clone();
+        let options = options.clone();
+        let cover_cache = Arc::clone(cover_cache);
+        let sink = Arc::clone(sink);
+        let item_ref = scheduled.item_ref.clone();
+        in_flight.spawn(async move {
+            match download_entity(
+                &provider,
+                &http,
+                &options,
+                &cover_cache,
+                scheduled.parent_album.as_ref(),
+                &scheduled.entity,
+                scheduled.item_id,
+                scheduled.operation_id,
+                &sink,
+            )
+            .await
+            {
+                Ok(completion) => Ok(DownloadTaskOutput {
+                    index: scheduled.index,
+                    completion,
+                }),
+                Err(error) => Err(DownloadTaskFailure {
+                    item_id: scheduled.item_id,
+                    item_label: scheduled.item_label,
+                    item_ref,
+                    error,
+                }),
+            }
+        });
+    }
+}
+
+fn media_ref_for_entity(entity: &CatalogEntity) -> Option<&MediaRef> {
+    match entity {
+        CatalogEntity::Track(track) => Some(&track.id),
+        CatalogEntity::Video(video) => Some(&video.id),
+        CatalogEntity::Album(album) => Some(&album.id),
+        CatalogEntity::Playlist(playlist) => Some(&playlist.id),
+        CatalogEntity::Artist(artist) => artist.id.as_ref(),
+        CatalogEntity::Collection(collection) => Some(&collection.id),
+    }
+}
+
+fn media_ref_label(reference: &MediaRef) -> String {
+    format!(
+        "{}:{}:{}",
+        reference.provider.as_str(),
+        resource_kind_label(reference.kind),
+        reference.id.as_str()
+    )
+}
+
+const fn resource_kind_label(kind: riptide_core::ResourceKind) -> &'static str {
+    match kind {
+        riptide_core::ResourceKind::Track => "track",
+        riptide_core::ResourceKind::Video => "video",
+        riptide_core::ResourceKind::Album => "album",
+        riptide_core::ResourceKind::Playlist => "playlist",
+        riptide_core::ResourceKind::Artist => "artist",
+        riptide_core::ResourceKind::Mix => "mix",
+    }
+}
+
+fn display_label_text(label: &DisplayLabel) -> String {
+    match (&label.artist, &label.group, label.track_number) {
+        (Some(artist), Some(group), Some(number)) => {
+            format!("{artist} - {group} - {:02} {}", number.get(), label.title)
+        }
+        (Some(artist), Some(group), None) => format!("{artist} - {group} - {}", label.title),
+        (Some(artist), None, Some(number)) => {
+            format!("{artist} - {:02} {}", number.get(), label.title)
+        }
+        (Some(artist), None, None) => format!("{artist} - {}", label.title),
+        (None, Some(group), Some(number)) => {
+            format!("{group} - {:02} {}", number.get(), label.title)
+        }
+        (None, Some(group), None) => format!("{group} - {}", label.title),
+        (None, None, Some(number)) => format!("{:02} {}", number.get(), label.title),
+        (None, None, None) => label.title.clone(),
+    }
+}
+
+fn print_failure_messages(messages: &[String], limit: usize) {
+    for message in messages.iter().take(limit) {
+        eprintln!("failed: {message}");
+    }
+    if messages.len() > limit {
+        eprintln!("... {} more failure(s)", messages.len() - limit);
+    }
+}
+
+fn operation_kind_and_label(
+    entity: &CatalogEntity,
+    fallback_input: &str,
+) -> (OperationKind, DisplayLabel) {
     match entity {
         CatalogEntity::Track(t) => (OperationKind::Track, label_for_track(t)),
-        CatalogEntity::Video(v) => (OperationKind::Video, label_for_video(v)),
+        CatalogEntity::Video(v) => (
+            OperationKind::Track,
+            DisplayLabel {
+                title: v.title.clone(),
+                artist: None,
+                group: None,
+                track_number: None,
+            },
+        ),
         CatalogEntity::Album(a) => (OperationKind::Album, label_for_album(a)),
         CatalogEntity::Playlist(p) => (
             OperationKind::Playlist,
@@ -675,22 +1011,31 @@ fn operation_kind_and_label(entity: &CatalogEntity, fallback_input: &str) -> (Op
                 track_number: None,
             },
         ),
-        CatalogEntity::Collection(_) => (
-            OperationKind::Collection,
-            DisplayLabel {
-                title: fallback_input.to_owned(),
-                artist: None,
-                group: None,
-                track_number: None,
-            },
-        ),
+        CatalogEntity::Collection(collection) => {
+            let kind = if collection.kind == CollectionKind::Mix {
+                OperationKind::Mix
+            } else {
+                OperationKind::Collection
+            };
+            (
+                kind,
+                DisplayLabel {
+                    title: collection
+                        .title
+                        .clone()
+                        .unwrap_or_else(|| fallback_input.to_owned()),
+                    artist: collection.owner.clone(),
+                    group: None,
+                    track_number: None,
+                },
+            )
+        }
     }
 }
 
 fn item_kind_and_label(entity: &CatalogEntity) -> (ItemKind, DisplayLabel) {
     match entity {
         CatalogEntity::Track(t) => (ItemKind::Track, label_for_track(t)),
-        CatalogEntity::Video(v) => (ItemKind::Video, label_for_video(v)),
         // Non-leaf entities should not appear in item lists, but handle gracefully.
         CatalogEntity::Album(a) => (
             ItemKind::Track,
@@ -717,26 +1062,120 @@ async fn expand_download_entities(
     provider: &TidalProvider,
     reference: &MediaRef,
     entity: CatalogEntity,
-) -> Result<Vec<CatalogEntity>> {
-    match entity {
-        CatalogEntity::Album(_) | CatalogEntity::Playlist(_) => provider
+    singles_mode: SinglesMode,
+    skip_errors: bool,
+) -> Result<ExpansionResult> {
+    let items = match entity {
+        CatalogEntity::Album(album) => provider
             .children(reference)
             .await
-            .context("failed to fetch collection children"),
-        CatalogEntity::Track(_) | CatalogEntity::Video(_) => Ok(vec![entity]),
-        CatalogEntity::Artist(_) | CatalogEntity::Collection(_) => {
-            anyhow::bail!(
-                "artist and generic collection downloads are not implemented in this slice"
-            )
+            .context("failed to fetch album children")?
+            .into_iter()
+            .filter_map(|entity| match entity {
+                CatalogEntity::Track(_) => Some((entity, Some(album.clone()))),
+                _ => None,
+            })
+            .collect(),
+        CatalogEntity::Playlist(_) => provider
+            .children(reference)
+            .await
+            .context("failed to fetch playlist children")?
+            .into_iter()
+            .filter_map(track_without_album)
+            .collect(),
+        CatalogEntity::Track(_) => vec![(entity, None)],
+        CatalogEntity::Video(_) => Vec::new(),
+        CatalogEntity::Artist(_) => {
+            return expand_artist_download_entities(provider, reference, singles_mode, skip_errors)
+                .await;
         }
+        CatalogEntity::Collection(_) => provider
+            .children(reference)
+            .await
+            .context("failed to fetch collection children")?
+            .into_iter()
+            .filter_map(track_without_album)
+            .collect(),
+    };
+    Ok(ExpansionResult {
+        items,
+        summary: DownloadSummary::default(),
+    })
+}
+
+async fn expand_artist_download_entities(
+    provider: &TidalProvider,
+    reference: &MediaRef,
+    singles_mode: SinglesMode,
+    skip_errors: bool,
+) -> Result<ExpansionResult> {
+    let albums = provider
+        .artist_albums_for_selection(
+            reference.id.as_str(),
+            artist_album_selection_for_singles_mode(singles_mode),
+        )
+        .await
+        .context("failed to fetch artist albums")?;
+    let mut result = ExpansionResult::default();
+    for album in albums {
+        if should_skip_by_singles_mode(&album, singles_mode) {
+            continue;
+        }
+        let children = match provider.children(&album.id).await {
+            Ok(children) => children,
+            Err(error) if skip_errors => {
+                result.summary.failed_expansions += 1;
+                result.summary.failure_messages.push(format!(
+                    "failed to fetch album items for {} ({}): {error:#}",
+                    album.title,
+                    media_ref_label(&album.id)
+                ));
+                continue;
+            }
+            Err(error) => {
+                return Err(error).with_context(|| {
+                    format!(
+                        "failed to fetch album items for {} ({})",
+                        album.title,
+                        media_ref_label(&album.id)
+                    )
+                });
+            }
+        };
+        result
+            .items
+            .extend(children.into_iter().filter_map(|entity| match entity {
+                CatalogEntity::Track(_) => Some((entity, Some(album.clone()))),
+                _ => None,
+            }));
+    }
+    Ok(result)
+}
+
+fn track_without_album(entity: CatalogEntity) -> Option<(CatalogEntity, Option<Album>)> {
+    match entity {
+        CatalogEntity::Track(_) => Some((entity, None)),
+        _ => None,
     }
 }
 
-const fn should_skip_entity(entity: &CatalogEntity, videos_mode: VideosMode) -> bool {
-    matches!(
-        (entity, videos_mode),
-        (CatalogEntity::Video(_), VideosMode::Skip) | (CatalogEntity::Track(_), VideosMode::Only)
-    )
+fn should_skip_by_singles_mode(album: &Album, singles_mode: SinglesMode) -> bool {
+    let album_type = AlbumType::from_release_type(album.release_type.as_deref());
+    match singles_mode {
+        SinglesMode::Include => false,
+        SinglesMode::Exclude => album_type.is_single_or_ep(),
+        SinglesMode::Only => !album_type.is_single_or_ep(),
+    }
+}
+
+const fn artist_album_selection_for_singles_mode(
+    singles_mode: SinglesMode,
+) -> ArtistAlbumSelection {
+    match singles_mode {
+        SinglesMode::Include => ArtistAlbumSelection::AlbumsAndSingles,
+        SinglesMode::Exclude => ArtistAlbumSelection::AlbumsOnly,
+        SinglesMode::Only => ArtistAlbumSelection::SinglesAndEpsOnly,
+    }
 }
 
 async fn download_entity(
@@ -749,9 +1188,9 @@ async fn download_entity(
     item_id: ItemId,
     operation_id: OperationId,
     sink: &Arc<dyn ProgressSink>,
-) -> Result<Option<M3uEntry>> {
+) -> Result<ItemCompletion> {
     let Some(item) = download_item_for_entity(entity, options) else {
-        return Ok(None);
+        return Ok(ItemCompletion::Skipped(None));
     };
 
     sink.emit(DownloadEvent::ItemPhaseChanged {
@@ -774,7 +1213,10 @@ async fn download_entity(
         .context("provider returned no stream variants")?;
 
     if let Some(badge) = quality_badge_for_stream(&stream) {
-        sink.emit(DownloadEvent::ItemQualityResolved { item_id, quality: badge });
+        sink.emit(DownloadEvent::ItemQualityResolved {
+            item_id,
+            quality: badge,
+        });
     }
 
     let plan = render_download_plan(options, &context, &stream)?;
@@ -790,16 +1232,15 @@ async fn download_entity(
             item_id,
             outcome: ItemOutcome::Exists,
         });
-        return Ok(Some(m3u_entry(
+        return Ok(ItemCompletion::Skipped(Some(m3u_entry(
             &options.root,
             &final_path,
             item.title,
             item.duration,
-        )));
+        ))));
     }
 
-    let prepared =
-        execute_media_download(http, &plan, &final_path, item_id, sink).await?;
+    let prepared = execute_media_download(http, &plan, &final_path, item_id, sink).await?;
 
     sink.emit(DownloadEvent::ItemPhaseChanged {
         item_id,
@@ -852,12 +1293,12 @@ async fn download_entity(
         item_id,
         outcome: ItemOutcome::Downloaded,
     });
-    Ok(Some(m3u_entry(
+    Ok(ItemCompletion::Downloaded(Some(m3u_entry(
         &options.root,
         &final_path,
         item.title,
         item.duration,
-    )))
+    ))))
 }
 
 struct DownloadItem<'a> {
@@ -880,13 +1321,6 @@ fn download_item_for_entity<'a>(
             metadata: MediaMetadataInput::Track(track),
             title: track.title.clone(),
         }),
-        CatalogEntity::Video(video) => Some(DownloadItem {
-            reference: &video.id,
-            quality: QualityRequest::Video(options.video_quality),
-            duration: video.duration,
-            metadata: MediaMetadataInput::Video(video),
-            title: video.title.clone(),
-        }),
         _ => None,
     }
 }
@@ -902,7 +1336,6 @@ async fn album_context_for_item(
 
     let album_ref = match item.metadata {
         MediaMetadataInput::Track(track) => track.album.as_ref().map(|album| &album.id),
-        MediaMetadataInput::Video(video) => video.album.as_ref().map(|album| &album.id),
     };
     let Some(album_ref) = album_ref else {
         return Ok(None);
@@ -929,7 +1362,6 @@ fn context_for_download_item(
     let now = time::OffsetDateTime::now_utc();
     let mut context = match item.metadata {
         MediaMetadataInput::Track(track) => TemplateContext::new(now).with_track(track),
-        MediaMetadataInput::Video(video) => TemplateContext::new(now).with_video(video),
     };
     if let Some(album) = album {
         context = context.with_album(album);
@@ -959,9 +1391,6 @@ fn cover_for_item(item: &DownloadItem<'_>, album: Option<&Album>) -> Option<Cove
         .or_else(|| match item.metadata {
             MediaMetadataInput::Track(track) => {
                 track.album.as_ref().and_then(|album| album.cover.clone())
-            }
-            MediaMetadataInput::Video(video) => {
-                video.album.as_ref().and_then(|album| album.cover.clone())
             }
         })
 }
@@ -1040,7 +1469,8 @@ async fn execute_media_download(
     Ok(PreparedDownload {
         processed,
         _temp_dir: temp_dir,
-    })}
+    })
+}
 
 async fn write_metadata_if_enabled(
     provider: &TidalProvider,
@@ -1058,7 +1488,6 @@ async fn write_metadata_if_enabled(
     if metadata_config.enable {
         let mut metadata = match input.item.metadata {
             MediaMetadataInput::Track(track) => metadata_from_track(track, input.album_context),
-            MediaMetadataInput::Video(video) => metadata_from_video(video),
         };
         metadata.cover_data.clone_from(&cover_data);
         if metadata_config.lyrics && matches!(input.item.metadata, MediaMetadataInput::Track(_)) {
@@ -1261,7 +1690,6 @@ fn cover_sidecar_path(final_path: &Path) -> PathBuf {
 
 enum MediaMetadataInput<'a> {
     Track(&'a Track),
-    Video(&'a Video),
 }
 
 struct MetadataWriteInput<'a> {
@@ -1287,7 +1715,6 @@ async fn claim_cover_sidecar(cover_cache: &CoverCache, cover_path: &Path) -> boo
     cache.written_sidecars.insert(cover_path.to_path_buf())
 }
 
-
 fn m3u_entry(
     root: &Path,
     final_path: &Path,
@@ -1308,6 +1735,18 @@ fn compile_optional_template(template: Option<String>) -> Result<Option<Compiled
     template
         .map(|template| CompiledTemplate::parse(&template).context("failed to compile template"))
         .transpose()
+}
+
+fn prevalidate_template(template: &CompiledTemplate) -> Result<()> {
+    template
+        .render_with_options(
+            &TemplateContext::synthetic(),
+            TemplateRenderOptions {
+                with_asterisk_ext: false,
+            },
+        )
+        .context("template validation failed")?;
+    Ok(())
 }
 
 fn load_runtime_config(options: &SharedOptions) -> Result<ValidatedConfig> {
@@ -1334,7 +1773,6 @@ fn effective_download_options(
     args: &DownloadArgs,
 ) -> Result<EffectiveDownloadOptions> {
     let audio_quality = parse_or_config_audio(args.audio_quality.as_deref(), download)?;
-    let video_quality = parse_or_config_video(args.video_quality.as_deref(), download)?;
     let concurrency = args.concurrency.map_or_else(
         || Ok(download.concurrency.get()),
         |value| Concurrency::new(value).map(Concurrency::get),
@@ -1366,7 +1804,6 @@ fn effective_download_options(
     Ok(EffectiveDownloadOptions {
         root,
         audio_quality,
-        video_quality,
         skip_existing,
         concurrency: usize::from(concurrency),
         template,
@@ -1376,7 +1813,10 @@ fn effective_download_options(
             cover: metadata.cover && !args.metadata.no_cover,
         },
         m3u,
-        videos_mode: download.videos_mode,
+        singles_mode: args
+            .singles
+            .map_or(download.singles_mode, SinglesMode::from),
+        skip_errors: args.errors.skip_errors,
     })
 }
 
@@ -1388,17 +1828,6 @@ fn parse_or_config_audio(
         value
             .parse()
             .with_context(|| format!("invalid audio quality `{value}`"))
-    })
-}
-
-fn parse_or_config_video(
-    value: Option<&str>,
-    download: &DownloadConfig,
-) -> Result<riptide_core::VideoQualityRequest> {
-    value.map_or(Ok(download.video_quality), |value| {
-        value
-            .parse()
-            .with_context(|| format!("invalid video quality `{value}`"))
     })
 }
 
@@ -1542,7 +1971,7 @@ mod tests {
     use super::*;
     use riptide_core::{
         AlbumSummary, Artist, ArtistCredit, ArtistRole, ExternalIds, ProviderId, ResourceId,
-        ResourceKind,
+        ResourceKind, Video,
     };
 
     #[test]
@@ -1592,11 +2021,63 @@ mod tests {
         assert_eq!(truncated.chars().count(), 72);
     }
 
+    #[test]
+    fn album_type_classifies_release_types_for_singles_filtering() {
+        assert_eq!(
+            AlbumType::from_release_type(Some("ALBUM")),
+            AlbumType::Album
+        );
+        assert_eq!(
+            AlbumType::from_release_type(Some("COMPILATION")),
+            AlbumType::Album
+        );
+        assert_eq!(
+            AlbumType::from_release_type(Some("SINGLE")),
+            AlbumType::Single
+        );
+        assert_eq!(AlbumType::from_release_type(Some("EP")), AlbumType::Ep);
+        assert_eq!(AlbumType::from_release_type(None), AlbumType::Unknown);
+        assert!(!AlbumType::Unknown.is_single_or_ep());
+    }
+
+    #[test]
+    fn singles_mode_maps_to_artist_album_selection() {
+        assert_eq!(
+            artist_album_selection_for_singles_mode(SinglesMode::Include),
+            ArtistAlbumSelection::AlbumsAndSingles
+        );
+        assert_eq!(
+            artist_album_selection_for_singles_mode(SinglesMode::Exclude),
+            ArtistAlbumSelection::AlbumsOnly
+        );
+        assert_eq!(
+            artist_album_selection_for_singles_mode(SinglesMode::Only),
+            ArtistAlbumSelection::SinglesAndEpsOnly
+        );
+    }
+
+    #[test]
+    fn video_entities_are_not_download_items() -> Result<()> {
+        let entity = CatalogEntity::Video(sample_video()?);
+        let options = test_download_options("{item.title}")?;
+
+        assert!(download_item_for_entity(&entity, &options).is_none());
+        Ok(())
+    }
+
+    #[test]
+    fn template_prevalidation_uses_synthetic_context() -> Result<()> {
+        let template = CompiledTemplate::parse(
+            "{album.artists}/{album.date:%Y} - {album.title}/{item.number:02d} {item.title}",
+        )?;
+
+        prevalidate_template(&template)
+    }
+
     fn test_download_options(template: &str) -> Result<EffectiveDownloadOptions> {
         Ok(EffectiveDownloadOptions {
             root: PathBuf::from("/tmp/riptide-test"),
             audio_quality: AudioQualityRequest::Lossless,
-            video_quality: riptide_core::VideoQualityRequest::High,
             skip_existing: true,
             concurrency: 1,
             template: CompiledTemplate::parse(template)?,
@@ -1606,7 +2087,8 @@ mod tests {
                 cover: false,
             },
             m3u: M3uConfig { save: false },
-            videos_mode: VideosMode::Include,
+            singles_mode: SinglesMode::Include,
+            skip_errors: false,
         })
     }
 
@@ -1646,6 +2128,20 @@ mod tests {
             release_type: None,
             hires_lossless: false,
             cover: None,
+        })
+    }
+
+    fn sample_video() -> Result<Video> {
+        Ok(Video {
+            id: media_ref(ResourceKind::Video, "video-1")?,
+            title: "Video Title".to_owned(),
+            artists: vec![artist_credit("Artist")?],
+            album: None,
+            duration: None,
+            track_number: None,
+            disc_number: None,
+            explicit: None,
+            quality_label: None,
         })
     }
 

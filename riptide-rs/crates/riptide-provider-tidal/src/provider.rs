@@ -1,10 +1,13 @@
 //! Provider trait implementation for TIDAL.
 
-use crate::{resource::TidalResource, TidalClient, TidalError, TIDAL_PROVIDER_ID};
+use crate::{
+    resource::TidalResource, ArtistAlbumSelection, TidalClient, TidalError, TidalResult,
+    TIDAL_PROVIDER_ID,
+};
 use async_trait::async_trait;
 use riptide_core::{
-    CatalogEntity, CollectionProvider, CoreError, CoreResult, Lyrics, LyricsProvider, MediaRef,
-    Provider, ProviderCapabilities, ProviderId, QualityRequest, Resolver, StreamProvider,
+    Album, CatalogEntity, CollectionProvider, CoreError, CoreResult, Lyrics, LyricsProvider,
+    MediaRef, Provider, ProviderCapabilities, ProviderId, QualityRequest, Resolver, StreamProvider,
     StreamVariant,
 };
 
@@ -22,6 +25,15 @@ impl TidalProvider {
             id: TIDAL_PROVIDER_ID.clone(),
             client,
         }
+    }
+
+    /// Fetches artist albums needed for a TIDAL-specific download selection.
+    pub async fn artist_albums_for_selection(
+        &self,
+        id: &str,
+        selection: ArtistAlbumSelection,
+    ) -> TidalResult<Vec<Album>> {
+        self.client.artist_albums_for_selection(id, selection).await
     }
 }
 
@@ -60,11 +72,20 @@ impl Resolver for TidalProvider {
                 .await
                 .map(CatalogEntity::Playlist)
                 .map_err(TidalError::into_core),
-            kind => Err(CoreError::UnsupportedResourceKind {
-                provider: self.id.clone(),
-                kind,
-                operation: "resolve",
-            }),
+            riptide_core::ResourceKind::Artist => self
+                .client
+                .artist(reference.id.as_str())
+                .await
+                .map(CatalogEntity::Artist)
+                .map_err(TidalError::into_core),
+            riptide_core::ResourceKind::Mix => {
+                Ok(CatalogEntity::Collection(riptide_core::Collection {
+                    id: reference.clone(),
+                    kind: riptide_core::CollectionKind::Mix,
+                    title: None,
+                    owner: None,
+                }))
+            }
         }
     }
 }

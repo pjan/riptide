@@ -4,7 +4,7 @@ use crate::{
     error::{ConfigError, ConfigResult},
     raw::RawConfig,
 };
-use riptide_core::{AudioQualityRequest, VideoQualityRequest};
+use riptide_core::AudioQualityRequest;
 use riptide_template::CompiledTemplate;
 use serde::Deserialize;
 use std::{
@@ -70,8 +70,6 @@ impl Default for ValidatedConfig {
 pub struct DownloadConfig {
     /// Requested audio quality.
     pub audio_quality: AudioQualityRequest,
-    /// Requested video quality.
-    pub video_quality: VideoQualityRequest,
     /// Skip existing files.
     pub skip_existing: bool,
     /// Download concurrency.
@@ -80,8 +78,6 @@ pub struct DownloadConfig {
     pub download_root: Option<DownloadRoot>,
     /// Singles handling mode.
     pub singles_mode: SinglesMode,
-    /// Videos handling mode.
-    pub videos_mode: VideosMode,
     /// Template configuration.
     pub templates: TemplateConfig,
 }
@@ -97,21 +93,12 @@ impl TryFrom<crate::raw::RawDownloadConfig> for DownloadConfig {
             }
         })?;
 
-        let video_quality = VideoQualityRequest::from_str(&raw.video_quality).map_err(|error| {
-            ConfigError::InvalidValue {
-                path: "download.video_quality".to_owned(),
-                message: error.to_string(),
-            }
-        })?;
-
         Ok(Self {
             audio_quality,
-            video_quality,
             skip_existing: raw.skip_existing,
             concurrency: Concurrency::new(raw.concurrency)?,
             download_root: raw.download_root.map(DownloadRoot::new).transpose()?,
             singles_mode: SinglesMode::from_str(&raw.singles_mode)?,
-            videos_mode: VideosMode::from_str(&raw.videos_mode)?,
             templates: TemplateConfig::try_from(raw.templates)?,
         })
     }
@@ -195,33 +182,6 @@ impl FromStr for SinglesMode {
     }
 }
 
-/// How videos are handled.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum VideosMode {
-    /// Skip videos.
-    Skip,
-    /// Include videos.
-    Include,
-    /// Download only videos.
-    Only,
-}
-
-impl FromStr for VideosMode {
-    type Err = ConfigError;
-
-    fn from_str(value: &str) -> Result<Self, Self::Err> {
-        match value {
-            "skip" => Ok(Self::Skip),
-            "include" => Ok(Self::Include),
-            "only" => Ok(Self::Only),
-            _ => Err(ConfigError::InvalidValue {
-                path: "download.videos_mode".to_owned(),
-                message: "expected skip, include, or only".to_owned(),
-            }),
-        }
-    }
-}
-
 /// Validated template configuration.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TemplateConfig {
@@ -229,8 +189,6 @@ pub struct TemplateConfig {
     pub default: CompiledTemplate,
     /// Track override.
     pub track: Option<CompiledTemplate>,
-    /// Video override.
-    pub video: Option<CompiledTemplate>,
     /// Album override.
     pub album: Option<CompiledTemplate>,
     /// Playlist override.
@@ -247,7 +205,6 @@ impl TryFrom<crate::raw::RawTemplateConfig> for TemplateConfig {
         Ok(Self {
             default,
             track: parse_template("download.templates.track", raw.track)?,
-            video: parse_template("download.templates.video", raw.video)?,
             album: parse_template("download.templates.album", raw.album)?,
             playlist: parse_template("download.templates.playlist", raw.playlist)?,
         })
@@ -415,19 +372,17 @@ fn inspect_unknown_keys(value: &toml::Value) -> ConfigResult<()> {
         "download",
         &[
             "audio_quality",
-            "video_quality",
             "skip_existing",
             "concurrency",
             "download_root",
             "singles_mode",
-            "videos_mode",
             "templates",
         ],
     )?;
     inspect_table(
         section_table(root, "download"),
         "templates",
-        &["default", "track", "video", "album", "playlist"],
+        &["default", "track", "album", "playlist"],
     )?;
     inspect_table(root, "listener", &["port", "secret"])?;
     inspect_table(root, "metadata", &["enable", "lyrics", "cover"])?;
@@ -482,11 +437,9 @@ mod tests {
     fn empty_config_uses_defaults() -> Result<(), Box<dyn std::error::Error>> {
         let config = ValidatedConfig::from_toml_str("")?;
         assert_eq!(config.download.audio_quality, AudioQualityRequest::High);
-        assert_eq!(config.download.video_quality, VideoQualityRequest::High);
         assert!(config.download.skip_existing);
         assert_eq!(config.download.concurrency.get(), 4);
         assert_eq!(config.download.singles_mode, SinglesMode::Include);
-        assert_eq!(config.download.videos_mode, VideosMode::Include);
         assert!(config.download.download_root.is_none());
         assert!(config.metadata.enable);
         assert!(config.metadata.lyrics);
@@ -503,12 +456,10 @@ mod tests {
             r#"
             [download]
             audio_quality = "lossless"
-            video_quality = "best"
             skip_existing = false
             concurrency = 2
             download_root = "Music/Riptide"
             singles_mode = "only"
-            videos_mode = "skip"
 
             [download.templates]
             default = "{item.title}"
@@ -528,11 +479,9 @@ mod tests {
         )?;
 
         assert_eq!(config.download.audio_quality, AudioQualityRequest::Lossless);
-        assert_eq!(config.download.video_quality, VideoQualityRequest::Best);
         assert!(!config.download.skip_existing);
         assert_eq!(config.download.concurrency.get(), 2);
         assert_eq!(config.download.singles_mode, SinglesMode::Only);
-        assert_eq!(config.download.videos_mode, VideosMode::Skip);
         assert_eq!(
             config
                 .download
@@ -569,7 +518,7 @@ mod tests {
     }
 
     #[test]
-    fn invalid_video_quality_fails_with_path() {
+    fn video_quality_is_no_longer_supported() {
         let error = ValidatedConfig::from_toml_str(
             r#"
             [download]
@@ -578,7 +527,7 @@ mod tests {
         );
         assert!(matches!(
             error,
-            Err(ConfigError::InvalidValue { ref path, .. }) if path == "download.video_quality"
+            Err(ConfigError::UnknownKey { ref path }) if path == "download.video_quality"
         ));
     }
 
@@ -587,9 +536,6 @@ mod tests {
         for (key, value, path) in [
             ("audio_quality", "normal", "download.audio_quality"),
             ("audio_quality", "max", "download.audio_quality"),
-            ("video_quality", "sd", "download.video_quality"),
-            ("video_quality", "hd", "download.video_quality"),
-            ("video_quality", "fhd", "download.video_quality"),
         ] {
             let error = ValidatedConfig::from_toml_str(&format!(
                 r#"
@@ -601,6 +547,31 @@ mod tests {
                 error,
                 Err(ConfigError::InvalidValue { path: ref error_path, .. }) if error_path == path
             ));
+        }
+    }
+
+    #[test]
+    fn video_download_keys_are_unknown() {
+        for (toml, path) in [
+            (
+                r#"
+                [download]
+                videos_mode = "skip"
+                "#,
+                "download.videos_mode",
+            ),
+            (
+                r#"
+                [download.templates]
+                video = "{item.title}"
+                "#,
+                "templates.video",
+            ),
+        ] {
+            let error = ValidatedConfig::from_toml_str(toml);
+            assert!(
+                matches!(error, Err(ConfigError::UnknownKey { path: ref error_path }) if error_path == path)
+            );
         }
     }
 

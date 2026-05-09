@@ -11,8 +11,8 @@ use crate::progress::{
 use indicatif::{HumanBytes, MultiProgress, ProgressBar, ProgressDrawTarget, ProgressStyle};
 use riptide_progress::{
     row::{phase_to_symbol, RowSymbol},
-    ArtifactKind, DownloadEvent, DownloadPhase, ItemId, ItemOutcome, OperationConfig,
-    ProgressSink, ProgressState, QualitySymbol,
+    ArtifactKind, DownloadEvent, DownloadPhase, ItemId, ItemOutcome, OperationConfig, ProgressSink,
+    ProgressState, QualitySymbol,
 };
 use std::{
     collections::HashMap,
@@ -101,7 +101,6 @@ impl ProgressSink for IndicatifSink {
 
         match &event {
             // ── Item lifecycle ────────────────────────────────────────────
-
             DownloadEvent::ItemQueued { item_id, label, .. } => {
                 let item_id = *item_id;
                 let bar = inner.multi.add(ProgressBar::new(1));
@@ -127,11 +126,7 @@ impl ProgressSink for IndicatifSink {
                     if let Some(item) = inner.state.items.get(&item_id) {
                         let label = item_label(&item.label, op_kind);
                         let badge = colors.quality_badge(quality);
-                        bar.set_message(format_item_msg(
-                            &empty_bytes_col(),
-                            &badge,
-                            &label,
-                        ));
+                        bar.set_message(format_item_msg(&empty_bytes_col(), &badge, &label));
                     }
                 }
             }
@@ -191,11 +186,7 @@ impl ProgressSink for IndicatifSink {
                             }
                             _ => String::new(),
                         };
-                        format_item_msg(
-                            &empty_bytes_col(),
-                            &badge,
-                            &format!("{label}{detail}"),
-                        )
+                        format_item_msg(&empty_bytes_col(), &badge, &format!("{label}{detail}"))
                     } else {
                         String::new()
                     };
@@ -208,16 +199,14 @@ impl ProgressSink for IndicatifSink {
             }
 
             // ── Artifacts: silent during download ─────────────────────────
-            DownloadEvent::ArtifactPhaseChanged { .. }
-            | DownloadEvent::ArtifactFinished { .. } => {}
+            DownloadEvent::ArtifactPhaseChanged { .. } | DownloadEvent::ArtifactFinished { .. } => {
+            }
 
             // ── Operation finish ──────────────────────────────────────────
             DownloadEvent::OperationFinished { .. } => {
                 let elapsed_secs = inner.start.elapsed().as_secs();
-                let elapsed = time::Duration::new(
-                    i64::try_from(elapsed_secs).unwrap_or(i64::MAX),
-                    0,
-                );
+                let elapsed =
+                    time::Duration::new(i64::try_from(elapsed_secs).unwrap_or(i64::MAX), 0);
                 let _ = inner.state.reduce(event.clone());
                 let summary = inner.state.summary(Some(elapsed));
 
@@ -225,9 +214,7 @@ impl ProgressSink for IndicatifSink {
 
                 let total = summary.downloaded + summary.copied + summary.enriched;
                 if total > 0 {
-                    eprintln!(
-                        "\nDownloaded {total} track(s) in {elapsed_secs}s"
-                    );
+                    eprintln!("\nDownloaded {total} track(s) in {elapsed_secs}s");
                 }
                 for artifact in &summary.artifacts {
                     let k = artifact_kind_label(&artifact.kind);
@@ -238,10 +225,7 @@ impl ProgressSink for IndicatifSink {
                     }
                 }
                 if summary.failed > 0 {
-                    eprintln!(
-                        "{}",
-                        colors.red(&format!("{} failed", summary.failed))
-                    );
+                    eprintln!("{}", colors.red(&format!("{} failed", summary.failed)));
                 }
                 return;
             }
@@ -553,10 +537,8 @@ pub(crate) fn truncate_label(label: &str) -> String {
 // ── Indicatif style helpers ──────────────────────────────────────────────────
 
 fn overall_style() -> ProgressStyle {
-    ProgressStyle::with_template(
-        "{prefix:>12.bold} [{bar:30.cyan/blue}] {pos:>3}/{len:<3}   {msg}",
-    )
-    .unwrap_or_else(|_| ProgressStyle::default_bar())
+    ProgressStyle::with_template("{prefix:>12.bold} [{bar:30.cyan/blue}] {pos:>3}/{len:<3}   {msg}")
+        .unwrap_or_else(|_| ProgressStyle::default_bar())
 }
 
 /// Item bars are indented 2 spaces relative to the overall bar.
