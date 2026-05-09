@@ -438,9 +438,12 @@ fn artifact_kind_from_phase(phase: &DownloadPhase) -> ArtifactKind {
 
 /// Formats a [`DisplayLabel`] for an item row.
 ///
-/// - If `is_in_group` is `true`, omits the artist prefix (the group row
-///   already provides context).
-/// - Always prefixes a two-digit track number when available.
+/// The artist prefix is omitted when:
+/// - `is_in_group` is `true` (the group row already provides context), **or**
+/// - `label.group` is `Some` (the item itself carries album/group context —
+///   common for TIDAL tracks that always have an album summary attached).
+///
+/// Always prefixes a two-digit track number when available.
 fn format_item_label(label: &DisplayLabel, is_in_group: bool) -> String {
     let number_prefix = label
         .track_number
@@ -448,7 +451,7 @@ fn format_item_label(label: &DisplayLabel, is_in_group: bool) -> String {
         .unwrap_or_default();
     let titled = format!("{number_prefix}{}", label.title);
 
-    if is_in_group || label.artist.is_none() {
+    if is_in_group || label.artist.is_none() || label.group.is_some() {
         titled
     } else {
         format!("{} - {titled}", label.artist.as_deref().unwrap_or(""))
