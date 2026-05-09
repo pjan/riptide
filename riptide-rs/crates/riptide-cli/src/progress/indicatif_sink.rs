@@ -68,7 +68,7 @@ impl IndicatifSink {
         let total = config.total_items.unwrap_or(0);
         let overall_bar = multi.add(ProgressBar::new(total));
         overall_bar.set_style(overall_style());
-        overall_bar.set_prefix("overall");
+        overall_bar.set_prefix(operation_kind_label(&config.kind));
         overall_bar.set_message(format_op_label(&config));
 
         let symbols = resolve_symbols(opts.symbols);
@@ -433,6 +433,22 @@ fn byte_unit(bytes: u64) -> (f64, &'static str) {
         (KIB as f64, "KiB")
     } else {
         (1.0, "B")
+    }
+}
+
+fn operation_kind_label(kind: &riptide_progress::OperationKind) -> &'static str {
+    use riptide_progress::OperationKind;
+    match kind {
+        OperationKind::Track => "track",
+        OperationKind::Video => "video",
+        OperationKind::Album => "album",
+        OperationKind::Playlist => "playlist",
+        OperationKind::Artist => "artist",
+        OperationKind::Mix => "mix",
+        OperationKind::Collection => "collection",
+        OperationKind::LocalTransfer => "transfer",
+        OperationKind::MetadataEnrichment => "enrich",
+        _ => "overall",
     }
 }
 
