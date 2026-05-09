@@ -106,18 +106,17 @@ impl ProgressSink for IndicatifSink {
             DownloadEvent::ItemQueued {
                 item_id,
                 label,
-                group_id,
                 ..
             } => {
                 let item_id = *item_id;
-                let is_in_group = group_id.is_some();
                 let bar = inner.multi.add(ProgressBar::new(1));
                 bar.set_style(item_style());
                 bar.set_prefix(format!(
                     "{} queued ",
                     sym(symbols, RowSymbol::Queued)
                 ));
-                bar.set_message(item_label_str(label, is_in_group));
+                let op_kind = &inner.state.operation.kind;
+                bar.set_message(item_label_str(label, op_kind));
                 inner.item_bars.insert(item_id, bar);
             }
 
@@ -126,11 +125,12 @@ impl ProgressSink for IndicatifSink {
                 if let Some(bar) = inner.item_bars.get(&item_id) {
                     // Read the item label from current state (already there
                     // because ItemQueued was reduced earlier).
+                    let op_kind = &inner.state.operation.kind;
                     let label_str = inner
                         .state
                         .items
                         .get(&item_id)
-                        .map(|s| item_label_str(&s.label, s.group_id.is_some()))
+                        .map(|s| item_label_str(&s.label, op_kind))
                         .unwrap_or_default();
                     bar.set_message(format!(
                         "{:<14} {label_str}",
@@ -170,8 +170,8 @@ impl ProgressSink for IndicatifSink {
                     }
                     // Update message with byte info (segment-boundary only).
                     if let Some(item) = inner.state.items.get(&item_id) {
-                        let label_str =
-                            item_label_str(&item.label, item.group_id.is_some());
+                        let op_kind = &inner.state.operation.kind;
+                        let label_str = item_label_str(&item.label, op_kind);
                         let badge = item
                             .quality
                             .as_ref()
@@ -200,7 +200,8 @@ impl ProgressSink for IndicatifSink {
                 // Print a plain completion line immediately.
                 if let Some(item) = inner.state.items.get(&item_id) {
                     let s = sym(symbols, outcome_symbol(outcome));
-                    let label_str = item_label_str(&item.label, item.group_id.is_some());
+                    let op_kind = &inner.state.operation.kind;
+                    let label_str = item_label_str(&item.label, op_kind);
                     let badge = item
                         .quality
                         .as_ref()
@@ -312,20 +313,35 @@ fn format_op_label(config: &OperationConfig) -> String {
     }
 }
 
-/// Formats an item label. Suppresses the artist prefix when the item already
-/// carries album/group context (`label.group.is_some()`) or is explicitly
-/// nested under a group in the progress hierarchy.
-fn item_label_str(label: &riptide_progress::DisplayLabel, is_in_group: bool) -> String {
+/// Formats an item label. Suppresses the artist prefix when:
+/// - The item is under a collection operation (album, playlist, artist, …)
+///   so the overall row already provides context, **or**
+/// - The item carries album/group context itself (`label.group.is_some()`).
+///
+/// The artist prefix is only shown for standalone single-track/video downloads.
+fn item_label_str(
+    label: &riptide_progress::DisplayLabel,
+    operation_kind: &riptide_progress::OperationKind,
+) -> String {
     let num = label
         .track_number
         .map(|n| format!("{:02} ", n.get()))
         .unwrap_or_default();
     let titled = format!("{num}{}", label.title);
-    if is_in_group || label.artist.is_none() || label.group.is_some() {
+
+    let is_collection = is_collection_operation(operation_kind);
+    if is_collection || label.artist.is_none() || label.group.is_some() {
         titled
     } else {
         format!("{} - {titled}", label.artist.as_deref().unwrap_or(""))
     }
+}
+
+/// Returns `true` for operation kinds where the overall row already provides
+/// enough context that individual items don't need an artist prefix.
+fn is_collection_operation(kind: &riptide_progress::OperationKind) -> bool {
+    use riptide_progress::OperationKind;
+    !matches!(kind, OperationKind::Track | OperationKind::Video)
 }
 
 fn badge_str(badge: &riptide_progress::QualityBadge) -> String {
