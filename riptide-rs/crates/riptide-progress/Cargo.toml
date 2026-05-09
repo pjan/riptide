@@ -1,0 +1,14 @@
+[package]
+name = "riptide-progress"
+edition.workspace = true
+license.workspace = true
+version.workspace = true
+
+[dependencies]
+riptide-core = { path = "../riptide-core" }
+indexmap.workspace = true
+thiserror.workspace = true
+time.workspace = true
+
+[lints]
+workspace = true

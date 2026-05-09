@@ -1,9 +1,14 @@
 //! Minimal riptide-rs command-line entry point.
 
+mod progress;
+
 use anyhow::{Context, Result};
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use directories::{ProjectDirs, UserDirs};
-use indicatif::{HumanBytes, MultiProgress, ProgressBar, ProgressDrawTarget, ProgressStyle};
+use progress::{
+    indicatif_sink::RenderOpts, ColorMode, CompletionDetail, IndicatifSink, MediaTransferProgress,
+    PlainSink, ProgressDetail, SymbolsMode,
+};
 use riptide_config::{
     Concurrency, DownloadConfig, M3uConfig, MetadataConfig, ValidatedConfig, VideosMode,
 };
@@ -14,11 +19,16 @@ use riptide_core::{
 };
 use riptide_media::{
     download_segments, plan_download, post_process, resolve_manifest_async, DownloadOptions,
-    DownloadProgress,
 };
 use riptide_metadata::{
     metadata_from_track, metadata_from_video, save_cover, write_lyrics_sidecar, write_m3u,
     write_tags, M3uEntry,
+};
+use riptide_progress::{
+    label::{label_for_album, label_for_track, label_for_video, quality_badge_for_stream},
+    ArtifactKind, ArtifactOutcome, DisplayLabel, DownloadEvent, DownloadPhase, ItemId, ItemKind,
+    ItemOutcome, NoopProgressSink, OperationConfig, OperationId, OperationKind,
+    ProgressIdAllocator, ProgressSink,
 };
 use riptide_provider_tidal::{
     cover_url, CoverArtSize, FileTokenStore, HttpClient, RedbApiCache, TidalAuthClient,
@@ -32,10 +42,8 @@ use std::{
     fs,
     io::IsTerminal,
     path::{Path, PathBuf},
-    sync::{
-        atomic::{AtomicU64, Ordering},
-        Arc,
-    },
+    sync::Arc,
+    time::Instant,
 };
 use url::Url;
 
@@ -201,6 +209,18 @@ struct DownloadArgs {
     /// Progress display mode.
     #[arg(long, value_enum, default_value = "auto")]
     progress: ProgressMode,
+    /// Detail level shown on active rows.
+    #[arg(long, value_enum, default_value = "title")]
+    progress_detail: ProgressDetail,
+    /// Detail level of completion output lines.
+    #[arg(long, value_enum, default_value = "auto")]
+    completion_detail: CompletionDetail,
+    /// Symbol rendering mode.
+    #[arg(long, value_enum, default_value = "auto")]
+    symbols: SymbolsMode,
+    /// ANSI colour mode.
+    #[arg(long, value_enum, default_value = "auto")]
+    color: ColorMode,
 }
 
 /// Existing-file flags.
@@ -512,7 +532,13 @@ async fn run_download(options: &SharedOptions, args: DownloadArgs) -> Result<()>
     let http = http_client()?;
     let semaphore = Arc::new(tokio::sync::Semaphore::new(effective.concurrency));
     let cover_cache = Arc::new(tokio::sync::Mutex::new(CoverCacheState::default()));
-    let progress = DownloadProgressUi::new(args.progress);
+    let alloc = ProgressIdAllocator::new();
+    let render_opts = RenderOpts {
+        progress_detail: args.progress_detail,
+        completion_detail: args.completion_detail,
+        symbols: args.symbols,
+        color: args.color,
+    };
     let mut m3u_entries = Vec::new();
 
     for input in &args.urls {
@@ -531,21 +557,45 @@ async fn run_download(options: &SharedOptions, args: DownloadArgs) -> Result<()>
             CatalogEntity::Album(album) => Some(album.clone()),
             _ => None,
         };
+
+        let (op_kind, op_label) = operation_kind_and_label(&entity, input);
         let children = expand_download_entities(&provider, &reference, entity).await?;
         let children = children
             .into_iter()
             .filter(|entity| !should_skip_entity(entity, effective.videos_mode))
             .collect::<Vec<_>>();
-        let progress_group = progress.group(input, children.len());
+
+        let op_id = alloc.next_operation_id();
+        let op_config = OperationConfig {
+            id: op_id,
+            kind: op_kind,
+            label: op_label,
+            total_groups: None,
+            total_items: Some(children.len() as u64),
+        };
+
+        let sink: Arc<dyn ProgressSink> = create_progress_sink(op_config, args.progress, render_opts);
         let mut handles = Vec::new();
+
         for entity in children {
+            let item_id = alloc.next_item_id();
+            let (item_kind, item_label) = item_kind_and_label(&entity);
+            sink.emit(DownloadEvent::ItemQueued {
+                operation_id: op_id,
+                group_id: None,
+                item_id,
+                kind: item_kind,
+                label: item_label,
+                quality: None,
+            });
+
             let provider = provider.clone();
             let http = http.clone();
             let options = effective.clone();
             let semaphore = Arc::clone(&semaphore);
             let cover_cache = Arc::clone(&cover_cache);
             let parent_album = parent_album.clone();
-            let progress_group = progress_group.clone();
+            let sink = Arc::clone(&sink);
             handles.push(tokio::spawn(async move {
                 let _permit = semaphore
                     .acquire_owned()
@@ -558,18 +608,22 @@ async fn run_download(options: &SharedOptions, args: DownloadArgs) -> Result<()>
                     &cover_cache,
                     parent_album.as_ref(),
                     &entity,
-                    &progress_group,
+                    item_id,
+                    op_id,
+                    &sink,
                 )
                 .await
             }));
         }
+
         for handle in handles {
             let Some(entry) = handle.await.context("download task panicked")?? else {
                 continue;
             };
             m3u_entries.push(entry);
         }
-        progress_group.finish();
+
+        sink.emit(DownloadEvent::OperationFinished { id: op_id });
     }
 
     if effective.m3u.save && !m3u_entries.is_empty() {
@@ -580,6 +634,84 @@ async fn run_download(options: &SharedOptions, args: DownloadArgs) -> Result<()>
             .context("failed to write M3U playlist")?;
     }
     Ok(())
+}
+
+fn create_progress_sink(
+    config: OperationConfig,
+    mode: ProgressMode,
+    opts: RenderOpts,
+) -> Arc<dyn ProgressSink> {
+    let interactive = match mode {
+        ProgressMode::Auto => std::io::stderr().is_terminal(),
+        ProgressMode::Always => true,
+        ProgressMode::Never => false,
+    };
+    if interactive {
+        Arc::new(IndicatifSink::new(config, opts))
+    } else {
+        Arc::new(PlainSink::new(config))
+    }
+}
+
+fn operation_kind_and_label(entity: &CatalogEntity, fallback_input: &str) -> (OperationKind, DisplayLabel) {
+    match entity {
+        CatalogEntity::Track(t) => (OperationKind::Track, label_for_track(t)),
+        CatalogEntity::Video(v) => (OperationKind::Video, label_for_video(v)),
+        CatalogEntity::Album(a) => (OperationKind::Album, label_for_album(a)),
+        CatalogEntity::Playlist(p) => (
+            OperationKind::Playlist,
+            DisplayLabel {
+                title: p.title.clone(),
+                artist: p.owner.clone(),
+                group: None,
+                track_number: None,
+            },
+        ),
+        CatalogEntity::Artist(a) => (
+            OperationKind::Artist,
+            DisplayLabel {
+                title: a.name.clone(),
+                artist: None,
+                group: None,
+                track_number: None,
+            },
+        ),
+        CatalogEntity::Collection(_) => (
+            OperationKind::Collection,
+            DisplayLabel {
+                title: fallback_input.to_owned(),
+                artist: None,
+                group: None,
+                track_number: None,
+            },
+        ),
+    }
+}
+
+fn item_kind_and_label(entity: &CatalogEntity) -> (ItemKind, DisplayLabel) {
+    match entity {
+        CatalogEntity::Track(t) => (ItemKind::Track, label_for_track(t)),
+        CatalogEntity::Video(v) => (ItemKind::Video, label_for_video(v)),
+        // Non-leaf entities should not appear in item lists, but handle gracefully.
+        CatalogEntity::Album(a) => (
+            ItemKind::Track,
+            DisplayLabel {
+                title: a.title.clone(),
+                artist: a.artists.first().map(|c| c.artist.name.clone()),
+                group: None,
+                track_number: None,
+            },
+        ),
+        other => (
+            ItemKind::Track,
+            DisplayLabel {
+                title: format!("{other:?}"),
+                artist: None,
+                group: None,
+                track_number: None,
+            },
+        ),
+    }
 }
 
 async fn expand_download_entities(
@@ -615,13 +747,25 @@ async fn download_entity(
     cover_cache: &CoverCache,
     parent_album: Option<&Album>,
     entity: &CatalogEntity,
-    progress_group: &ProgressGroup,
+    item_id: ItemId,
+    operation_id: OperationId,
+    sink: &Arc<dyn ProgressSink>,
 ) -> Result<Option<M3uEntry>> {
     let Some(item) = download_item_for_entity(entity, options) else {
         return Ok(None);
     };
+
+    sink.emit(DownloadEvent::ItemPhaseChanged {
+        item_id,
+        phase: DownloadPhase::ResolvingMetadata,
+    });
     let album_context = album_context_for_item(provider, parent_album, &item).await?;
     let context = context_for_download_item(options, &item, album_context.as_ref())?;
+
+    sink.emit(DownloadEvent::ItemPhaseChanged {
+        item_id,
+        phase: DownloadPhase::ResolvingStream,
+    });
     let stream = provider
         .streams(item.reference, item.quality.clone())
         .await
@@ -629,12 +773,24 @@ async fn download_entity(
         .into_iter()
         .next()
         .context("provider returned no stream variants")?;
+
+    if let Some(badge) = quality_badge_for_stream(&stream) {
+        sink.emit(DownloadEvent::ItemQualityResolved { item_id, quality: badge });
+    }
+
     let plan = render_download_plan(options, &context, &stream)?;
     let final_path = plan.final_path();
-    let track_progress = progress_group.track(&options.root, &final_path);
+
+    sink.emit(DownloadEvent::ItemOutputResolved {
+        item_id,
+        path: final_path.clone(),
+    });
+
     if options.skip_existing && final_path.exists() {
-        track_progress.finish_skipped();
-        progress_group.advance();
+        sink.emit(DownloadEvent::ItemFinished {
+            item_id,
+            outcome: ItemOutcome::Exists,
+        });
         return Ok(Some(m3u_entry(
             &options.root,
             &final_path,
@@ -643,8 +799,13 @@ async fn download_entity(
         )));
     }
 
-    let prepared = execute_media_download(http, &plan, &final_path, &track_progress).await?;
-    track_progress.phase("tagging");
+    let prepared =
+        execute_media_download(http, &plan, &final_path, item_id, sink).await?;
+
+    sink.emit(DownloadEvent::ItemPhaseChanged {
+        item_id,
+        phase: DownloadPhase::Tagging,
+    });
     let cover_data = write_metadata_if_enabled(
         provider,
         http,
@@ -658,16 +819,40 @@ async fn download_entity(
         },
     )
     .await?;
-    track_progress.phase("persisting");
-    persist_processed_file(&prepared.processed, &final_path).await?;
-    track_progress.phase("lyrics");
-    write_lyrics_sidecar_if_available(provider, options, &item, &final_path).await?;
-    track_progress.phase("cover");
-    write_cover_sidecar_if_available(options, cover_cache, cover_data.as_deref(), &final_path)
-        .await?;
 
-    track_progress.finish_done();
-    progress_group.advance();
+    sink.emit(DownloadEvent::ItemPhaseChanged {
+        item_id,
+        phase: DownloadPhase::Persisting,
+    });
+    persist_processed_file(&prepared.processed, &final_path).await?;
+
+    // Lyrics sidecar
+    write_lyrics_sidecar_with_events(
+        provider,
+        options,
+        &item,
+        &final_path,
+        item_id,
+        operation_id,
+        sink,
+    )
+    .await?;
+
+    // Cover sidecar
+    write_cover_sidecar_with_events(
+        options,
+        cover_cache,
+        cover_data.as_deref(),
+        &final_path,
+        operation_id,
+        sink,
+    )
+    .await?;
+
+    sink.emit(DownloadEvent::ItemFinished {
+        item_id,
+        outcome: ItemOutcome::Downloaded,
+    });
     Ok(Some(m3u_entry(
         &options.root,
         &final_path,
@@ -809,7 +994,8 @@ async fn execute_media_download(
     http: &HttpClient,
     plan: &riptide_media::DownloadPlan,
     final_path: &Path,
-    progress: &TrackProgress,
+    item_id: ItemId,
+    sink: &Arc<dyn ProgressSink>,
 ) -> Result<PreparedDownload> {
     let final_parent = final_path.parent().unwrap_or_else(|| Path::new("."));
     fs::create_dir_all(final_parent)
@@ -821,29 +1007,41 @@ async fn execute_media_download(
     let download_path = temp_dir
         .path()
         .join(format!("download{}", plan.download_extension.as_str()));
-    progress.phase("resolving media");
+
+    sink.emit(DownloadEvent::ItemPhaseChanged {
+        item_id,
+        phase: DownloadPhase::ResolvingMedia,
+    });
     let resolved = resolve_manifest_async(&plan.manifest, http)
         .await
         .context("failed to resolve media manifest")?;
-    progress.start_download(resolved.urls.len());
+
+    sink.emit(DownloadEvent::ItemPhaseChanged {
+        item_id,
+        phase: DownloadPhase::Downloading,
+    });
+    let transfer = MediaTransferProgress::new(item_id, Arc::clone(sink));
     download_segments(
         http,
         &resolved.urls,
         &download_path,
         DownloadOptions::default(),
-        Some(progress),
+        Some(&transfer),
     )
     .await
     .context("failed to download media segments")?;
-    progress.phase("post-processing");
+
+    sink.emit(DownloadEvent::ItemPhaseChanged {
+        item_id,
+        phase: DownloadPhase::PostProcessing,
+    });
     let processed = post_process(download_path, &plan.post_process)
         .await
         .context("failed to post-process media")?;
     Ok(PreparedDownload {
         processed,
         _temp_dir: temp_dir,
-    })
-}
+    })}
 
 async fn write_metadata_if_enabled(
     provider: &TidalProvider,
@@ -952,6 +1150,132 @@ async fn write_lyrics_sidecar_if_available(
     Ok(())
 }
 
+async fn write_lyrics_sidecar_with_events(
+    provider: &TidalProvider,
+    options: &EffectiveDownloadOptions,
+    item: &DownloadItem<'_>,
+    final_path: &Path,
+    item_id: ItemId,
+    operation_id: OperationId,
+    sink: &Arc<dyn ProgressSink>,
+) -> Result<()> {
+    if !options.metadata.enable
+        || !options.metadata.lyrics
+        || !matches!(item.metadata, MediaMetadataInput::Track(_))
+    {
+        return Ok(());
+    }
+    let Ok(Some(lyrics)) = provider.lyrics(item.reference).await else {
+        return Ok(());
+    };
+    let Some(lrc) = lyrics.synchronized_lrc else {
+        return Ok(());
+    };
+
+    let sidecar_name = lyrics_sidecar_name(final_path);
+    sink.emit(DownloadEvent::ArtifactPhaseChanged {
+        operation_id,
+        group_id: None,
+        item_id: Some(item_id),
+        kind: ArtifactKind::Lyrics,
+        label: sidecar_name.clone(),
+        phase: DownloadPhase::WritingLyrics,
+    });
+    let sidecar_path = final_path.to_path_buf();
+    let result = tokio::task::spawn_blocking(move || write_lyrics_sidecar(&sidecar_path, &lrc))
+        .await
+        .context("failed to join lyrics sidecar writer")?
+        .context("failed to write lyrics sidecar");
+    let outcome = match &result {
+        Ok(()) => ArtifactOutcome::Written,
+        Err(e) => ArtifactOutcome::Failed {
+            message: e.to_string(),
+        },
+    };
+    sink.emit(DownloadEvent::ArtifactFinished {
+        operation_id,
+        group_id: None,
+        item_id: Some(item_id),
+        kind: ArtifactKind::Lyrics,
+        label: sidecar_name,
+        outcome,
+    });
+    result
+}
+
+async fn write_cover_sidecar_with_events(
+    options: &EffectiveDownloadOptions,
+    cover_cache: &CoverCache,
+    cover_data: Option<&[u8]>,
+    final_path: &Path,
+    operation_id: OperationId,
+    sink: &Arc<dyn ProgressSink>,
+) -> Result<()> {
+    if !options.metadata.enable || !options.metadata.cover {
+        return Ok(());
+    }
+    let Some(cover_data) = cover_data else {
+        return Ok(());
+    };
+    let cover_path = cover_sidecar_path(final_path);
+    if !claim_cover_sidecar(cover_cache, &cover_path).await {
+        return Ok(());
+    }
+
+    let label = cover_path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("cover.jpg")
+        .to_owned();
+    sink.emit(DownloadEvent::ArtifactPhaseChanged {
+        operation_id,
+        group_id: None,
+        item_id: None,
+        kind: ArtifactKind::Cover,
+        label: label.clone(),
+        phase: DownloadPhase::WritingCover,
+    });
+    let data = cover_data.to_vec();
+    let result = tokio::task::spawn_blocking({
+        let cover_path = cover_path.clone();
+        move || save_cover(&data, &cover_path)
+    })
+    .await
+    .context("failed to join cover writer")?
+    .context("failed to write cover sidecar");
+
+    if result.is_err() {
+        cover_cache
+            .lock()
+            .await
+            .written_sidecars
+            .remove(&cover_path);
+    }
+    let outcome = match &result {
+        Ok(()) => ArtifactOutcome::Written,
+        Err(e) => ArtifactOutcome::Failed {
+            message: e.to_string(),
+        },
+    };
+    sink.emit(DownloadEvent::ArtifactFinished {
+        operation_id,
+        group_id: None,
+        item_id: None,
+        kind: ArtifactKind::Cover,
+        label,
+        outcome,
+    });
+    result
+}
+
+fn lyrics_sidecar_name(final_path: &Path) -> String {
+    final_path
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .map(|stem| format!("{stem}.lrc"))
+        .unwrap_or_else(|| "lyrics.lrc".to_owned())
+}
+
 async fn write_cover_sidecar_if_available(
     options: &EffectiveDownloadOptions,
     cover_cache: &CoverCache,
@@ -1020,232 +1344,6 @@ async fn claim_cover_sidecar(cover_cache: &CoverCache, cover_path: &Path) -> boo
     cache.written_sidecars.insert(cover_path.to_path_buf())
 }
 
-#[derive(Clone)]
-struct DownloadProgressUi {
-    multi: Option<Arc<MultiProgress>>,
-}
-
-impl DownloadProgressUi {
-    fn new(mode: ProgressMode) -> Self {
-        let enabled = match mode {
-            ProgressMode::Auto => std::io::stderr().is_terminal(),
-            ProgressMode::Always => true,
-            ProgressMode::Never => false,
-        };
-        let multi = enabled.then(|| {
-            let multi = MultiProgress::with_draw_target(ProgressDrawTarget::stderr_with_hz(10));
-            let _ = multi.println("");
-            Arc::new(multi)
-        });
-        Self { multi }
-    }
-
-    fn group(&self, input: &str, total_items: usize) -> ProgressGroup {
-        let Some(multi) = &self.multi else {
-            eprintln!("downloading: {input}");
-            return ProgressGroup {
-                multi: None,
-                overall: None,
-            };
-        };
-        let total = u64::try_from(total_items).unwrap_or(u64::MAX);
-        let overall = multi.add(ProgressBar::new(total));
-        overall.set_style(overall_progress_style());
-        overall.set_prefix("overall");
-        overall.set_message(input.to_owned());
-        ProgressGroup {
-            multi: Some(Arc::clone(multi)),
-            overall: Some(overall),
-        }
-    }
-}
-
-#[derive(Clone)]
-struct ProgressGroup {
-    multi: Option<Arc<MultiProgress>>,
-    overall: Option<ProgressBar>,
-}
-
-impl ProgressGroup {
-    fn track(&self, root: &Path, final_path: &Path) -> TrackProgress {
-        let label = display_path(root, final_path);
-        let Some(multi) = &self.multi else {
-            eprintln!("download: {label}");
-            return TrackProgress::disabled(label);
-        };
-        let bar = multi.add(ProgressBar::new(1));
-        bar.set_style(track_progress_style());
-        let progress = TrackProgress {
-            bar: Some(bar),
-            label,
-            bytes_downloaded: AtomicU64::new(0),
-            byte_total: AtomicU64::new(0),
-        };
-        progress.phase("resolving stream");
-        progress
-    }
-
-    fn advance(&self) {
-        if let Some(overall) = &self.overall {
-            overall.inc(1);
-        }
-    }
-
-    fn finish(&self) {
-        if let Some(overall) = &self.overall {
-            overall.finish_and_clear();
-        }
-    }
-}
-
-struct TrackProgress {
-    bar: Option<ProgressBar>,
-    label: String,
-    bytes_downloaded: AtomicU64,
-    byte_total: AtomicU64,
-}
-
-impl TrackProgress {
-    const fn disabled(label: String) -> Self {
-        Self {
-            bar: None,
-            label,
-            bytes_downloaded: AtomicU64::new(0),
-            byte_total: AtomicU64::new(0),
-        }
-    }
-
-    fn phase(&self, phase: &'static str) {
-        if let Some(bar) = &self.bar {
-            bar.set_style(track_progress_style());
-            bar.set_prefix(phase.to_owned());
-            bar.set_message(self.status_message());
-        }
-    }
-
-    fn start_download(&self, total_segments: usize) {
-        if let Some(bar) = &self.bar {
-            bar.set_style(track_progress_style());
-            bar.set_prefix("download");
-            bar.set_length(u64::try_from(total_segments).unwrap_or(u64::MAX));
-            bar.set_position(0);
-            self.bytes_downloaded.store(0, Ordering::Relaxed);
-            self.byte_total.store(0, Ordering::Relaxed);
-            bar.set_message(self.status_message());
-        }
-    }
-
-    fn finish_done(&self) {
-        self.finish_line("done");
-    }
-
-    fn finish_skipped(&self) {
-        self.finish_line("skip existing");
-    }
-
-    fn finish_line(&self, prefix: &'static str) {
-        if let Some(bar) = &self.bar {
-            bar.set_style(track_progress_style());
-            bar.set_prefix(prefix.to_owned());
-            bar.finish_with_message(self.status_message());
-        } else {
-            eprintln!("{prefix}: {}", self.label);
-        }
-    }
-
-    fn status_message(&self) -> String {
-        let bytes = self.bytes_downloaded.load(Ordering::Relaxed);
-        format!("{:>12} {}", HumanBytes(bytes), truncate_label(&self.label))
-    }
-}
-
-impl DownloadProgress for TrackProgress {
-    fn on_segment_start(
-        &self,
-        segment_index: usize,
-        total_segments: usize,
-        content_length: Option<u64>,
-    ) {
-        if let Some(bar) = &self.bar {
-            bar.set_style(track_progress_style());
-            bar.set_prefix("download");
-            if total_segments == 1 {
-                if let Some(content_length) = content_length {
-                    self.byte_total.store(content_length, Ordering::Relaxed);
-                    bar.set_length(content_length);
-                    bar.set_position(self.bytes_downloaded.load(Ordering::Relaxed));
-                } else {
-                    self.byte_total.store(0, Ordering::Relaxed);
-                    bar.set_length(1);
-                    bar.set_position(0);
-                }
-            } else {
-                self.byte_total.store(0, Ordering::Relaxed);
-                bar.set_length(u64::try_from(total_segments).unwrap_or(u64::MAX));
-                bar.set_position(u64::try_from(segment_index).unwrap_or(u64::MAX));
-            }
-            bar.set_message(self.status_message());
-        }
-    }
-
-    fn on_bytes(&self, bytes_downloaded: u64) {
-        self.bytes_downloaded
-            .fetch_add(bytes_downloaded, Ordering::Relaxed);
-        if let Some(bar) = &self.bar {
-            if self.byte_total.load(Ordering::Relaxed) > 0 {
-                bar.set_position(self.bytes_downloaded.load(Ordering::Relaxed));
-            }
-            bar.set_message(self.status_message());
-        }
-    }
-
-    fn on_segment_complete(&self, segment_index: usize, _total_segments: usize) {
-        if let Some(bar) = &self.bar {
-            let byte_total = self.byte_total.load(Ordering::Relaxed);
-            if byte_total > 0 {
-                bar.set_position(byte_total);
-            } else {
-                let position = u64::try_from(segment_index.saturating_add(1)).unwrap_or(u64::MAX);
-                bar.set_position(position);
-            }
-            bar.set_message(self.status_message());
-        }
-    }
-}
-
-fn display_path(root: &Path, final_path: &Path) -> String {
-    final_path
-        .strip_prefix(root)
-        .map_or(final_path, |path| path)
-        .display()
-        .to_string()
-}
-
-fn truncate_label(label: &str) -> String {
-    const MAX_CHARS: usize = 72;
-    if label.chars().count() <= MAX_CHARS {
-        return label.to_owned();
-    }
-    let tail = label
-        .chars()
-        .rev()
-        .take(MAX_CHARS.saturating_sub(1))
-        .collect::<Vec<_>>()
-        .into_iter()
-        .rev()
-        .collect::<String>();
-    format!("…{tail}")
-}
-
-fn overall_progress_style() -> ProgressStyle {
-    ProgressStyle::with_template("{prefix:>12.bold} [{bar:30.cyan/blue}] {pos:>3}/{len:<3} {msg}")
-        .unwrap_or_else(|_| ProgressStyle::default_bar())
-}
-
-fn track_progress_style() -> ProgressStyle {
-    ProgressStyle::with_template("{prefix:>12} [{bar:30.cyan/blue}] {msg}")
-        .unwrap_or_else(|_| ProgressStyle::default_bar())
-}
 
 fn m3u_entry(
     root: &Path,
@@ -1544,7 +1642,7 @@ mod tests {
     #[test]
     fn progress_label_truncates_from_left() {
         let label = "Dream Theater/1992 - Images and Words/05 Metropolis - Part I The Miracle and the Sleeper.m4a";
-        let truncated = truncate_label(label);
+        let truncated = progress::indicatif_sink::truncate_label(label);
 
         assert!(truncated.starts_with('…'));
         assert!(truncated.ends_with("Sleeper.m4a"));

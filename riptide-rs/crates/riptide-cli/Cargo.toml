@@ -12,6 +12,7 @@ indicatif.workspace = true
 riptide-config = { path = "../riptide-config" }
 riptide-core = { path = "../riptide-core" }
 riptide-media = { path = "../riptide-media" }
+riptide-progress = { path = "../riptide-progress" }
 riptide-metadata = { path = "../riptide-metadata" }
 riptide-provider-tidal = { path = "../riptide-provider-tidal" }
 riptide-template = { path = "../riptide-template" }

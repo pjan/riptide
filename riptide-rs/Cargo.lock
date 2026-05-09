@@ -2101,6 +2101,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "riptide-progress"
+version = "0.1.0"
+dependencies = [
+ "indexmap 2.14.0",
+ "riptide-core",
+ "thiserror 2.0.18",
+ "time",
+]
+
+[[package]]
 name = "riptide-provider-tidal"
 version = "0.1.0"
 dependencies = [
@@ -2130,6 +2140,7 @@ dependencies = [
  "riptide-core",
  "riptide-media",
  "riptide-metadata",
+ "riptide-progress",
  "riptide-provider-tidal",
  "riptide-template",
  "tempfile",
