@@ -5,10 +5,8 @@
 //!
 //! ## Performance contract
 //!
-//! `on_bytes` updates atomic counters **only** — no string formatting, no row
-//! rebuilding, no mutex acquisition. The event is emitted on segment boundaries
-//! (`on_segment_start`, `on_segment_complete`) where the frequency is low.
-//! Byte-level numeric state is read by the sink at its own throttled cadence.
+//! `on_bytes` updates atomic counters and emits coarse byte-progress snapshots.
+//! It does no string formatting or row rebuilding; the sink controls rendering.
 
 use riptide_media::DownloadProgress;
 use riptide_progress::{DownloadEvent, ItemId, ProgressSink, TransferMode, TransferProgress};
@@ -16,6 +14,8 @@ use std::sync::{
     atomic::{AtomicU64, Ordering},
     Arc,
 };
+
+const BYTE_UPDATE_GRANULARITY: u64 = 256 * 1024;
 
 /// Adapts segment-level callbacks into [`ProgressSink`] transfer events.
 pub struct MediaTransferProgress {
@@ -31,6 +31,8 @@ pub struct MediaTransferProgress {
     segments_done: AtomicU64,
     /// Known total segment count.
     segments_total: AtomicU64,
+    /// Bytes accumulated since the last emitted progress event.
+    bytes_since_emit: AtomicU64,
 }
 
 impl MediaTransferProgress {
@@ -43,6 +45,7 @@ impl MediaTransferProgress {
             bytes_total: AtomicU64::new(0),
             segments_done: AtomicU64::new(0),
             segments_total: AtomicU64::new(0),
+            bytes_since_emit: AtomicU64::new(0),
         }
     }
 
@@ -92,12 +95,66 @@ impl DownloadProgress for MediaTransferProgress {
     fn on_bytes(&self, bytes_downloaded: u64) {
         self.bytes_done
             .fetch_add(bytes_downloaded, Ordering::Relaxed);
-        // No event emission here — the renderer reads counters at its own pace.
+        let pending = self
+            .bytes_since_emit
+            .fetch_add(bytes_downloaded, Ordering::Relaxed)
+            .saturating_add(bytes_downloaded);
+        if pending >= BYTE_UPDATE_GRANULARITY {
+            self.bytes_since_emit.store(0, Ordering::Relaxed);
+            self.emit_update();
+        }
     }
 
     fn on_segment_complete(&self, segment_index: usize, _total_segments: usize) {
         let done = u64::try_from(segment_index.saturating_add(1)).unwrap_or(u64::MAX);
         self.segments_done.store(done, Ordering::Relaxed);
+        self.bytes_since_emit.store(0, Ordering::Relaxed);
         self.emit_update();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use riptide_progress::{DownloadEvent, ProgressIdAllocator};
+    use std::sync::Mutex;
+
+    #[derive(Default)]
+    struct RecordingSink {
+        events: Mutex<Vec<DownloadEvent>>,
+    }
+
+    impl ProgressSink for RecordingSink {
+        fn emit(&self, event: DownloadEvent) {
+            self.events
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .push(event);
+        }
+    }
+
+    #[test]
+    fn byte_progress_emits_before_segment_complete() {
+        let sink = Arc::new(RecordingSink::default());
+        let progress =
+            MediaTransferProgress::new(ProgressIdAllocator::new().next_item_id(), sink.clone());
+
+        progress.on_segment_start(0, 1, Some(1024 * 1024));
+        progress.on_bytes(BYTE_UPDATE_GRANULARITY / 2);
+        progress.on_bytes(BYTE_UPDATE_GRANULARITY / 2);
+
+        let events = sink
+            .events
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        assert_eq!(events.len(), 2);
+        match &events[1] {
+            DownloadEvent::TransferUpdate { progress, .. } => {
+                assert_eq!(progress.bytes_done, BYTE_UPDATE_GRANULARITY);
+                assert_eq!(progress.bytes_total, Some(1024 * 1024));
+                assert_eq!(progress.segments_done, 0);
+            }
+            other => panic!("unexpected event: {other:?}"),
+        }
     }
 }
