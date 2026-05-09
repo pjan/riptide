@@ -27,7 +27,7 @@ use riptide_metadata::{
 use riptide_progress::{
     label::{label_for_album, label_for_track, label_for_video, quality_badge_for_stream},
     ArtifactKind, ArtifactOutcome, DisplayLabel, DownloadEvent, DownloadPhase, ItemId, ItemKind,
-    ItemOutcome, NoopProgressSink, OperationConfig, OperationId, OperationKind,
+    ItemOutcome, OperationConfig, OperationId, OperationKind,
     ProgressIdAllocator, ProgressSink,
 };
 use riptide_provider_tidal::{
@@ -43,7 +43,6 @@ use std::{
     io::IsTerminal,
     path::{Path, PathBuf},
     sync::Arc,
-    time::Instant,
 };
 use url::Url;
 
@@ -1127,29 +1126,6 @@ async fn persist_processed_file(processed: &Path, final_path: &Path) -> Result<(
     Ok(())
 }
 
-async fn write_lyrics_sidecar_if_available(
-    provider: &TidalProvider,
-    options: &EffectiveDownloadOptions,
-    item: &DownloadItem<'_>,
-    final_path: &Path,
-) -> Result<()> {
-    if options.metadata.enable
-        && options.metadata.lyrics
-        && matches!(item.metadata, MediaMetadataInput::Track(_))
-    {
-        if let Ok(Some(lyrics)) = provider.lyrics(item.reference).await {
-            if let Some(lrc) = lyrics.synchronized_lrc {
-                let sidecar_path = final_path.to_path_buf();
-                tokio::task::spawn_blocking(move || write_lyrics_sidecar(&sidecar_path, &lrc))
-                    .await
-                    .context("failed to join lyrics sidecar writer")?
-                    .context("failed to write lyrics sidecar")?;
-            }
-        }
-    }
-    Ok(())
-}
-
 async fn write_lyrics_sidecar_with_events(
     provider: &TidalProvider,
     options: &EffectiveDownloadOptions,
@@ -1274,39 +1250,6 @@ fn lyrics_sidecar_name(final_path: &Path) -> String {
         .and_then(|s| s.to_str())
         .map(|stem| format!("{stem}.lrc"))
         .unwrap_or_else(|| "lyrics.lrc".to_owned())
-}
-
-async fn write_cover_sidecar_if_available(
-    options: &EffectiveDownloadOptions,
-    cover_cache: &CoverCache,
-    cover_data: Option<&[u8]>,
-    final_path: &Path,
-) -> Result<()> {
-    if options.metadata.enable && options.metadata.cover {
-        if let Some(cover_data) = cover_data {
-            let cover_path = cover_sidecar_path(final_path);
-            if !claim_cover_sidecar(cover_cache, &cover_path).await {
-                return Ok(());
-            }
-            let data = cover_data.to_vec();
-            let write_result = tokio::task::spawn_blocking({
-                let cover_path = cover_path.clone();
-                move || save_cover(&data, &cover_path)
-            })
-            .await
-            .context("failed to join cover writer")?
-            .context("failed to write cover sidecar");
-            if write_result.is_err() {
-                cover_cache
-                    .lock()
-                    .await
-                    .written_sidecars
-                    .remove(&cover_path);
-            }
-            write_result?;
-        }
-    }
-    Ok(())
 }
 
 fn cover_sidecar_path(final_path: &Path) -> PathBuf {

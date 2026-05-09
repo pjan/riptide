@@ -381,7 +381,7 @@ impl ProgressState {
                 // Remove from active artifacts. It is acceptable for
                 // ArtifactFinished to arrive without a prior ArtifactPhaseChanged
                 // (e.g. an immediately-skipped artifact).
-                self.artifacts.remove(&key);
+                self.artifacts.shift_remove(&key);
                 self.completed.push(CompletedRecord::Artifact {
                     operation_id,
                     group_id,
@@ -403,7 +403,7 @@ impl ProgressState {
             DownloadEvent::ItemFinished { item_id, outcome } => {
                 let item = self
                     .items
-                    .remove(&item_id)
+                    .shift_remove(&item_id)
                     .ok_or(ProgressError::UnknownItem(item_id))?;
                 // Increment parent group's done counter.
                 if let Some(gid) = item.group_id {
@@ -423,7 +423,7 @@ impl ProgressState {
             DownloadEvent::GroupFinished { group_id, outcome } => {
                 let group = self
                     .groups
-                    .remove(&group_id)
+                    .shift_remove(&group_id)
                     .ok_or(ProgressError::UnknownGroup(group_id))?;
                 self.completed.push(CompletedRecord::Group {
                     group_id,

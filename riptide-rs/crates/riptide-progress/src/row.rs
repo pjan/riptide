@@ -12,7 +12,7 @@
 //! - [`Vec<CompletionRow>`] — finished items, artifacts, and groups
 
 use crate::event::{
-    ArtifactKind, ArtifactOutcome, DisplayLabel, DownloadPhase, GroupOutcome, ItemKind,
+    ArtifactKind, ArtifactOutcome, DisplayLabel, DownloadPhase, GroupOutcome,
     ItemOutcome, OperationKind, QualityBadge, TransferProgress,
 };
 use crate::state::{CompletedRecord, ProgressState};
@@ -499,26 +499,11 @@ fn aggregate_bytes(state: &ProgressState) -> Option<BytePair> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::event::{ItemKind, OperationKind};
+    use crate::event::OperationKind;
     use crate::id::ProgressIdAllocator;
     use crate::state::ProgressState;
     use crate::DownloadEvent;
     use crate::OperationConfig;
-
-    fn simple_config(alloc: &ProgressIdAllocator) -> OperationConfig {
-        OperationConfig {
-            id: alloc.next_operation_id(),
-            kind: OperationKind::Album,
-            label: DisplayLabel {
-                title: "Images and Words".to_owned(),
-                artist: Some("Dream Theater".to_owned()),
-                group: None,
-                track_number: None,
-            },
-            total_groups: None,
-            total_items: Some(2),
-        }
-    }
 
     #[test]
     fn item_label_with_track_number_in_group() -> Result<(), Box<dyn std::error::Error>> {

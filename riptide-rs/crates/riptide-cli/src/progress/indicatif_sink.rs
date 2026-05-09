@@ -1,14 +1,14 @@
 //! Indicatif-based interactive progress sink.
 
 use crate::progress::{
-    colors::{resolve_color, ColorEnabled},
+    colors::resolve_color,
     options::{ColorMode, CompletionDetail, ProgressDetail, SymbolsMode},
     symbols::{resolve_symbols, symbol_for, SymbolSet},
 };
-use indicatif::{HumanBytes, MultiProgress, ProgressBar, ProgressDrawTarget, ProgressStyle};
+use indicatif::{MultiProgress, ProgressBar, ProgressDrawTarget, ProgressStyle};
 use riptide_progress::{
     row::{
-        build_active_rows, build_completion_rows, phase_to_symbol, ActiveRow, CompletionRow,
+        build_completion_rows, phase_to_symbol, CompletionRow,
         CountUnit, RowSymbol,
     },
     ArtifactKind, ArtifactOutcome, DownloadEvent, DownloadPhase, GroupId, GroupOutcome,
@@ -21,6 +21,9 @@ use std::{
 };
 
 /// Rendering options passed to [`IndicatifSink::new`].
+// Fields are read when --progress-detail and --completion-detail rendering
+// paths are implemented (Phase 4 completion work).
+#[allow(dead_code)]
 #[derive(Debug, Clone, Copy)]
 pub struct RenderOpts {
     /// Detail level for active rows.
@@ -442,6 +445,7 @@ fn sym(set: SymbolSet, symbol: RowSymbol) -> String {
 }
 
 /// Truncates a label to `MAX_CHARS` characters, preserving the tail.
+#[cfg(test)]
 pub(crate) fn truncate_label(label: &str) -> String {
     const MAX_CHARS: usize = 72;
     if label.chars().count() <= MAX_CHARS {
