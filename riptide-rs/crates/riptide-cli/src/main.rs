@@ -25,12 +25,13 @@ use riptide_metadata::{
 };
 use riptide_progress::{
     label::{label_for_album, label_for_track, quality_badge_for_stream},
-    ArtifactKind, ArtifactOutcome, DisplayLabel, DownloadEvent, DownloadPhase, ItemId, ItemKind,
-    ItemOutcome, OperationConfig, OperationId, OperationKind, ProgressIdAllocator, ProgressSink,
+    ArtifactKind, ArtifactOutcome, DisplayLabel, DownloadEvent, DownloadPhase, GroupId,
+    GroupOutcome, ItemId, ItemKind, ItemOutcome, OperationConfig, OperationId, OperationKind,
+    ProgressIdAllocator, ProgressSink,
 };
 use riptide_provider_tidal::{
-    cover_url, ArtistAlbumSelection, CoverArtSize, FileTokenStore, HttpClient, RedbApiCache,
-    TidalAuthClient, TidalClient, TidalCredentials, TidalError, TidalProvider, TokenStore,
+    cover_url, CoverArtSize, FileTokenStore, HttpClient, RedbApiCache, TidalAuthClient,
+    TidalClient, TidalCredentials, TidalError, TidalProvider, TokenStore,
 };
 use riptide_template::{
     context_from_fixture_str, CompiledTemplate, TemplateContext, TemplateRenderOptions,
@@ -327,8 +328,44 @@ impl AlbumType {
 
 #[derive(Debug, Default)]
 struct ExpansionResult {
+    /// Flat items for non-grouped operations (album, playlist, track, mix).
     items: Vec<(CatalogEntity, Option<Album>)>,
+    /// Album groups for artist operations. When non-empty, `items` is empty.
+    groups: Vec<ExpandedGroup>,
     summary: DownloadSummary,
+}
+
+impl ExpansionResult {
+    #[allow(dead_code)]
+    fn is_grouped(&self) -> bool {
+        !self.groups.is_empty()
+    }
+
+    fn total_items(&self) -> usize {
+        self.items.len() + self.groups.iter().map(|g| g.items.len()).sum::<usize>()
+    }
+
+    fn assert_valid_shape(&self) {
+        debug_assert!(
+            self.items.is_empty() || self.groups.is_empty(),
+            "ExpansionResult must use items or groups, not both"
+        );
+    }
+}
+
+struct ExpandedGroup {
+    album: Album,
+    label: DisplayLabel,
+    items: Vec<CatalogEntity>,
+}
+
+impl std::fmt::Debug for ExpandedGroup {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ExpandedGroup")
+            .field("album", &self.album.title)
+            .field("items_count", &self.items.len())
+            .finish()
+    }
 }
 
 #[derive(Debug, Default, Clone)]
@@ -361,16 +398,19 @@ struct ScheduledDownload {
     parent_album: Option<Album>,
     item_id: ItemId,
     operation_id: OperationId,
+    group_id: Option<GroupId>,
     item_label: DisplayLabel,
 }
 
 struct DownloadTaskOutput {
     index: usize,
+    group_id: Option<GroupId>,
     completion: ItemCompletion,
 }
 
 struct DownloadTaskFailure {
     item_id: ItemId,
+    group_id: Option<GroupId>,
     item_label: DisplayLabel,
     item_ref: MediaRef,
     error: anyhow::Error,
@@ -384,6 +424,62 @@ impl DownloadTaskFailure {
             media_ref_label(&self.item_ref),
             self.error
         )
+    }
+}
+
+struct GroupCompletionTracker {
+    groups: HashMap<GroupId, GroupCompletionState>,
+}
+
+struct GroupCompletionState {
+    total: u64,
+    finished: u64,
+    failed: u64,
+}
+
+impl GroupCompletionTracker {
+    fn new() -> Self {
+        Self {
+            groups: HashMap::new(),
+        }
+    }
+
+    fn register(&mut self, group_id: GroupId, total: usize) {
+        self.groups.insert(
+            group_id,
+            GroupCompletionState {
+                total: total as u64,
+                finished: 0,
+                failed: 0,
+            },
+        );
+    }
+
+    /// Records an item completion. Returns `Some((group_id, outcome))` when the
+    /// group is fully finished.
+    fn record_item_finished(
+        &mut self,
+        group_id: Option<GroupId>,
+        failed: bool,
+    ) -> Option<(GroupId, GroupOutcome)> {
+        let group_id = group_id?;
+        let state = self.groups.get_mut(&group_id)?;
+        state.finished += 1;
+        if failed {
+            state.failed += 1;
+        }
+        if state.finished >= state.total {
+            let outcome = if state.failed == 0 {
+                GroupOutcome::Done
+            } else {
+                GroupOutcome::Partial {
+                    failed: state.failed,
+                }
+            };
+            Some((group_id, outcome))
+        } else {
+            None
+        }
     }
 }
 
@@ -694,62 +790,141 @@ async fn run_download(options: &SharedOptions, args: DownloadArgs) -> Result<Dow
             effective.skip_errors,
         )
         .await?;
-        summary.merge(expansion.summary);
-        if expansion.items.is_empty() {
+        expansion.assert_valid_shape();
+        if expansion.total_items() == 0 {
+            summary.merge(expansion.summary);
             continue;
         }
+        let ExpansionResult {
+            items: expansion_items,
+            groups: expansion_groups,
+            summary: expansion_summary,
+        } = expansion;
+        summary.merge(expansion_summary);
 
         let op_id = alloc.next_operation_id();
-        let op_config = OperationConfig {
-            id: op_id,
-            kind: op_kind,
-            label: op_label,
-            total_groups: None,
-            total_items: Some(expansion.items.len() as u64),
-        };
-
-        let sink: Arc<dyn ProgressSink> =
-            create_progress_sink(op_config, args.progress, render_opts);
         let mut scheduled = Vec::new();
+        let mut group_tracker = GroupCompletionTracker::new();
 
-        for (entity, parent_album) in expansion.items {
-            let item_id = alloc.next_item_id();
-            let (item_kind, item_label) = item_kind_and_label(&entity);
-            sink.emit(DownloadEvent::ItemQueued {
-                operation_id: op_id,
-                group_id: None,
-                item_id,
-                kind: item_kind,
-                label: item_label.clone(),
-                quality: None,
-            });
-            let Some(item_ref) = media_ref_for_entity(&entity).cloned() else {
-                continue;
+        if !expansion_groups.is_empty() {
+            // ── Grouped path (artist) ───────────────────────────────────
+            let total_groups = Some(expansion_groups.len() as u64);
+            let total_items: u64 =
+                expansion_groups.iter().map(|g| g.items.len() as u64).sum();
+            let op_config = OperationConfig {
+                id: op_id,
+                kind: op_kind,
+                label: op_label,
+                total_groups,
+                total_items: Some(total_items),
             };
-            scheduled.push(ScheduledDownload {
-                index: next_index,
-                entity,
-                item_ref,
-                parent_album,
-                item_id,
-                operation_id: op_id,
-                item_label,
-            });
-            next_index += 1;
-        }
+            let sink: Arc<dyn ProgressSink> =
+                create_progress_sink(op_config, args.progress, render_opts);
 
-        let operation_entries = run_scheduled_downloads(
-            scheduled,
-            &provider,
-            &http,
-            &effective,
-            &cover_cache,
-            &sink,
-            &mut summary,
-        )
-        .await?;
-        m3u_entries.extend(operation_entries);
-        sink.emit(DownloadEvent::OperationFinished { id: op_id });
+            for group in &expansion_groups {
+                let group_id = alloc.next_group_id();
+                group_tracker.register(group_id, group.items.len());
+                sink.emit(DownloadEvent::GroupStarted {
+                    operation_id: op_id,
+                    group_id,
+                    kind: OperationKind::Album,
+                    label: group.label.clone(),
+                    total_items: Some(group.items.len() as u64),
+                });
+                for entity in &group.items {
+                    let item_id = alloc.next_item_id();
+                    let (item_kind, item_label) = item_kind_and_label(entity);
+                    sink.emit(DownloadEvent::ItemQueued {
+                        operation_id: op_id,
+                        group_id: Some(group_id),
+                        item_id,
+                        kind: item_kind,
+                        label: item_label.clone(),
+                        quality: None,
+                    });
+                    let Some(item_ref) = media_ref_for_entity(entity).cloned() else {
+                        continue;
+                    };
+                    scheduled.push(ScheduledDownload {
+                        index: next_index,
+                        entity: entity.clone(),
+                        item_ref,
+                        parent_album: Some(group.album.clone()),
+                        item_id,
+                        operation_id: op_id,
+                        group_id: Some(group_id),
+                        item_label,
+                    });
+                    next_index += 1;
+                }
+            }
+
+            let operation_entries = run_scheduled_downloads(
+                scheduled,
+                &provider,
+                &http,
+                &effective,
+                &cover_cache,
+                &sink,
+                &mut summary,
+                &mut group_tracker,
+            )
+            .await?;
+            m3u_entries.extend(operation_entries);
+            sink.emit(DownloadEvent::OperationFinished { id: op_id });
+        } else {
+            // ── Flat path (album, playlist, track, mix) ─────────────────
+            let op_config = OperationConfig {
+                id: op_id,
+                kind: op_kind,
+                label: op_label,
+                total_groups: None,
+                total_items: Some(expansion_items.len() as u64),
+            };
+            let sink: Arc<dyn ProgressSink> =
+                create_progress_sink(op_config, args.progress, render_opts);
+
+            for (entity, parent_album) in expansion_items {
+                let item_id = alloc.next_item_id();
+                let (item_kind, item_label) = item_kind_and_label(&entity);
+                sink.emit(DownloadEvent::ItemQueued {
+                    operation_id: op_id,
+                    group_id: None,
+                    item_id,
+                    kind: item_kind,
+                    label: item_label.clone(),
+                    quality: None,
+                });
+                let Some(item_ref) = media_ref_for_entity(&entity).cloned() else {
+                    continue;
+                };
+                scheduled.push(ScheduledDownload {
+                    index: next_index,
+                    entity,
+                    item_ref,
+                    parent_album,
+                    item_id,
+                    operation_id: op_id,
+                    group_id: None,
+                    item_label,
+                });
+                next_index += 1;
+            }
+
+            let operation_entries = run_scheduled_downloads(
+                scheduled,
+                &provider,
+                &http,
+                &effective,
+                &cover_cache,
+                &sink,
+                &mut summary,
+                &mut group_tracker,
+            )
+            .await?;
+            m3u_entries.extend(operation_entries);
+            sink.emit(DownloadEvent::OperationFinished { id: op_id });
+        }
     }
 
     if effective.m3u.save && !m3u_entries.is_empty() {
@@ -792,6 +967,7 @@ async fn run_scheduled_downloads(
     cover_cache: &CoverCache,
     sink: &Arc<dyn ProgressSink>,
     summary: &mut DownloadSummary,
+    group_tracker: &mut GroupCompletionTracker,
 ) -> Result<Vec<(usize, M3uEntry)>> {
     let mut pending = scheduled.into_iter();
     let mut in_flight = JoinSet::new();
@@ -824,6 +1000,14 @@ async fn run_scheduled_downloads(
                         }
                     }
                 }
+                if let Some((gid, outcome)) =
+                    group_tracker.record_item_finished(output.group_id, false)
+                {
+                    sink.emit(DownloadEvent::GroupFinished {
+                        group_id: gid,
+                        outcome,
+                    });
+                }
                 fill_download_queue(
                     &mut in_flight,
                     &mut pending,
@@ -842,6 +1026,14 @@ async fn run_scheduled_downloads(
                     item_id: failure.item_id,
                     outcome: ItemOutcome::Failed { message },
                 });
+                if let Some((gid, outcome)) =
+                    group_tracker.record_item_finished(failure.group_id, true)
+                {
+                    sink.emit(DownloadEvent::GroupFinished {
+                        group_id: gid,
+                        outcome,
+                    });
+                }
                 fill_download_queue(
                     &mut in_flight,
                     &mut pending,
@@ -903,10 +1095,12 @@ fn fill_download_queue(
             {
                 Ok(completion) => Ok(DownloadTaskOutput {
                     index: scheduled.index,
+                    group_id: scheduled.group_id,
                     completion,
                 }),
                 Err(error) => Err(DownloadTaskFailure {
                     item_id: scheduled.item_id,
+                    group_id: scheduled.group_id,
                     item_label: scheduled.item_label,
                     item_ref,
                     error,
@@ -1068,7 +1262,7 @@ fn item_kind_and_label(entity: &CatalogEntity) -> (ItemKind, DisplayLabel) {
 }
 
 async fn expand_download_entities(
-    provider: &TidalProvider,
+    provider: &(dyn CollectionProvider + Send + Sync),
     reference: &MediaRef,
     entity: CatalogEntity,
     singles_mode: SinglesMode,
@@ -1108,28 +1302,30 @@ async fn expand_download_entities(
     };
     Ok(ExpansionResult {
         items,
+        groups: Vec::new(),
         summary: DownloadSummary::default(),
     })
 }
 
 async fn expand_artist_download_entities(
-    provider: &TidalProvider,
+    provider: &(dyn CollectionProvider + Send + Sync),
     reference: &MediaRef,
     singles_mode: SinglesMode,
     skip_errors: bool,
 ) -> Result<ExpansionResult> {
-    let albums = provider
-        .artist_albums_for_selection(
-            &reference.id,
-            artist_album_selection_for_singles_mode(singles_mode),
-        )
+    let albums: Vec<Album> = provider
+        .children(reference)
         .await
-        .context("failed to fetch artist albums")?;
+        .context("failed to fetch artist albums")?
+        .into_iter()
+        .filter_map(|e| match e {
+            CatalogEntity::Album(a) => Some(a),
+            _ => None,
+        })
+        .filter(|a| !should_skip_by_singles_mode(a, singles_mode))
+        .collect();
     let mut result = ExpansionResult::default();
     for album in albums {
-        if should_skip_by_singles_mode(&album, singles_mode) {
-            continue;
-        }
         let children = match provider.children(&album.id).await {
             Ok(children) => children,
             Err(error) if skip_errors => {
@@ -1151,12 +1347,18 @@ async fn expand_artist_download_entities(
                 });
             }
         };
-        result
-            .items
-            .extend(children.into_iter().filter_map(|entity| match entity {
-                CatalogEntity::Track(_) => Some((entity, Some(album.clone()))),
-                _ => None,
-            }));
+        let tracks: Vec<CatalogEntity> = children
+            .into_iter()
+            .filter(|e| matches!(e, CatalogEntity::Track(_)))
+            .collect();
+        if tracks.is_empty() {
+            continue;
+        }
+        result.groups.push(ExpandedGroup {
+            label: label_for_album(&album),
+            album,
+            items: tracks,
+        });
     }
     Ok(result)
 }
@@ -1174,16 +1376,6 @@ fn should_skip_by_singles_mode(album: &Album, singles_mode: SinglesMode) -> bool
         SinglesMode::Include => false,
         SinglesMode::Exclude => album_type.is_single_or_ep(),
         SinglesMode::Only => !album_type.is_single_or_ep(),
-    }
-}
-
-const fn artist_album_selection_for_singles_mode(
-    singles_mode: SinglesMode,
-) -> ArtistAlbumSelection {
-    match singles_mode {
-        SinglesMode::Include => ArtistAlbumSelection::AlbumsAndSingles,
-        SinglesMode::Exclude => ArtistAlbumSelection::AlbumsOnly,
-        SinglesMode::Only => ArtistAlbumSelection::SinglesAndEpsOnly,
     }
 }
 
@@ -2057,22 +2249,6 @@ mod tests {
     }
 
     #[test]
-    fn singles_mode_maps_to_artist_album_selection() {
-        assert_eq!(
-            artist_album_selection_for_singles_mode(SinglesMode::Include),
-            ArtistAlbumSelection::AlbumsAndSingles
-        );
-        assert_eq!(
-            artist_album_selection_for_singles_mode(SinglesMode::Exclude),
-            ArtistAlbumSelection::AlbumsOnly
-        );
-        assert_eq!(
-            artist_album_selection_for_singles_mode(SinglesMode::Only),
-            ArtistAlbumSelection::SinglesAndEpsOnly
-        );
-    }
-
-    #[test]
     fn video_entities_are_not_download_items() -> Result<()> {
         let entity = CatalogEntity::Video(sample_video()?);
         let options = test_download_options("{item.title}")?;
@@ -2177,5 +2353,45 @@ mod tests {
             kind,
             ResourceId::new(id)?,
         ))
+    }
+
+    #[test]
+    fn group_tracker_completes_groups_out_of_order() {
+        let alloc = ProgressIdAllocator::new();
+        let g1 = alloc.next_group_id();
+        let g2 = alloc.next_group_id();
+        let mut tracker = GroupCompletionTracker::new();
+        tracker.register(g1, 2);
+        tracker.register(g2, 1);
+
+        assert!(tracker.record_item_finished(Some(g1), false).is_none());
+        assert_eq!(
+            tracker.record_item_finished(Some(g2), false),
+            Some((g2, GroupOutcome::Done))
+        );
+        assert_eq!(
+            tracker.record_item_finished(Some(g1), false),
+            Some((g1, GroupOutcome::Done))
+        );
+    }
+
+    #[test]
+    fn group_tracker_reports_partial_on_failure() {
+        let alloc = ProgressIdAllocator::new();
+        let g1 = alloc.next_group_id();
+        let mut tracker = GroupCompletionTracker::new();
+        tracker.register(g1, 2);
+
+        assert!(tracker.record_item_finished(Some(g1), true).is_none());
+        assert_eq!(
+            tracker.record_item_finished(Some(g1), false),
+            Some((g1, GroupOutcome::Partial { failed: 1 }))
+        );
+    }
+
+    #[test]
+    fn group_tracker_ignores_none_group_id() {
+        let mut tracker = GroupCompletionTracker::new();
+        assert!(tracker.record_item_finished(None, false).is_none());
     }
 }

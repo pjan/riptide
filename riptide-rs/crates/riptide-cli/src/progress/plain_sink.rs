@@ -66,6 +66,12 @@ impl ProgressSink for PlainSink {
                 }
                 ArtifactOutcome::Skipped { .. } | _ => {}
             },
+            DownloadEvent::GroupStarted {
+                label, total_items, ..
+            } => {
+                let count = total_items.unwrap_or(0);
+                eprintln!("group: {} ({count} tracks)", label.title);
+            }
             DownloadEvent::GroupFinished { outcome, .. } => match outcome {
                 GroupOutcome::Done => eprintln!("group done"),
                 GroupOutcome::Partial { failed } => eprintln!("group partial ({failed} failed)"),

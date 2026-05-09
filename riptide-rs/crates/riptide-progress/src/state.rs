@@ -489,11 +489,8 @@ impl ProgressState {
                     ArtifactOutcome::Failed { .. } => artifacts_failed += 1,
                     ArtifactOutcome::Skipped { .. } => {}
                 },
-                CompletedRecord::Group { outcome, .. } => {
+                CompletedRecord::Group { .. } => {
                     groups_done += 1;
-                    if let GroupOutcome::Partial { failed: f } = outcome {
-                        failed += f;
-                    }
                 }
             }
         }
@@ -767,5 +764,66 @@ mod tests {
         // The label title is unaffected.
         assert_eq!(item.label.title, "Pull Me Under");
         Ok(())
+    }
+
+    #[test]
+    fn summary_does_not_double_count_group_partial_failures() {
+        let alloc = ProgressIdAllocator::new();
+        let op_id = alloc.next_operation_id();
+        let group_id = alloc.next_group_id();
+        let item_id = alloc.next_item_id();
+        let mut state = ProgressState::new(OperationConfig {
+            id: op_id,
+            kind: OperationKind::Artist,
+            label: DisplayLabel {
+                title: "Test Artist".to_owned(),
+                artist: None,
+                group: None,
+                track_number: None,
+            },
+            total_groups: Some(1),
+            total_items: Some(1),
+        });
+
+        let _ = state.reduce(DownloadEvent::GroupStarted {
+            operation_id: op_id,
+            group_id,
+            kind: OperationKind::Album,
+            label: DisplayLabel {
+                title: "Test Album".to_owned(),
+                artist: None,
+                group: None,
+                track_number: None,
+            },
+            total_items: Some(1),
+        });
+        let _ = state.reduce(DownloadEvent::ItemQueued {
+            operation_id: op_id,
+            group_id: Some(group_id),
+            item_id,
+            kind: ItemKind::Track,
+            label: DisplayLabel {
+                title: "Track".to_owned(),
+                artist: None,
+                group: None,
+                track_number: None,
+            },
+            quality: None,
+        });
+        let _ = state.reduce(DownloadEvent::ItemFinished {
+            item_id,
+            outcome: ItemOutcome::Failed {
+                message: "test error".to_owned(),
+            },
+        });
+        let _ = state.reduce(DownloadEvent::GroupFinished {
+            group_id,
+            outcome: GroupOutcome::Partial { failed: 1 },
+        });
+        let _ = state.reduce(DownloadEvent::OperationFinished { id: op_id });
+
+        let summary = state.summary(None);
+        assert_eq!(summary.failed, 1, "item failure must not be double-counted by group partial");
+        assert_eq!(summary.groups_done, 1);
     }
 }

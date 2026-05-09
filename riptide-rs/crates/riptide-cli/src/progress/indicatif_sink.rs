@@ -21,8 +21,8 @@ use crate::progress::{
 use indicatif::{HumanBytes, MultiProgress, ProgressBar, ProgressDrawTarget, ProgressStyle};
 use riptide_progress::{
     row::{phase_to_symbol, RowSymbol},
-    ArtifactKind, DownloadEvent, DownloadPhase, ItemId, ItemOutcome, OperationConfig, ProgressSink,
-    ProgressState, QualitySymbol,
+    ArtifactKind, DownloadEvent, DownloadPhase, GroupId, GroupOutcome, ItemId, ItemOutcome,
+    OperationConfig, OperationKind, ProgressSink, ProgressState, QualitySymbol,
 };
 use std::{
     collections::HashMap,
@@ -66,9 +66,17 @@ struct SinkInner {
     multi: MultiProgress,
     overall_bar: ProgressBar,
     item_bars: HashMap<ItemId, ProgressBar>,
+    group_bars: HashMap<GroupId, ProgressBar>,
+    last_group_bar: Option<ProgressBar>,
     start: Instant,
     symbols: SymbolSet,
     colors: Colors,
+    /// Stored for completion-detail rendering in `OperationFinished`.
+    #[allow(dead_code)]
+    op_kind: OperationKind,
+    /// Stored for completion-detail rendering in `OperationFinished`.
+    #[allow(dead_code)]
+    completion_detail: CompletionDetail,
 }
 
 impl IndicatifSink {
@@ -83,6 +91,8 @@ impl IndicatifSink {
 
         let symbols = resolve_symbols(opts.symbols);
         let colors = Colors::resolve(opts.color);
+        let op_kind = config.kind.clone();
+        let completion_detail = opts.completion_detail;
 
         Self {
             inner: Mutex::new(SinkInner {
@@ -90,9 +100,13 @@ impl IndicatifSink {
                 multi,
                 overall_bar,
                 item_bars: HashMap::new(),
+                group_bars: HashMap::new(),
+                last_group_bar: None,
                 start: Instant::now(),
                 symbols,
                 colors,
+                op_kind,
+                completion_detail,
             }),
         }
     }
@@ -113,20 +127,26 @@ impl ProgressSink for IndicatifSink {
             // ── Item lifecycle ────────────────────────────────────────────
             DownloadEvent::ItemQueued { item_id, label, .. } => {
                 let item_id = *item_id;
-                let bar = inner.multi.add(ProgressBar::new(1));
-                bar.set_style(item_style());
-                let op_kind = &inner.state.operation.kind;
-                bar.set_prefix(colors.dim(&format!(
-                    "{} {:<7}",
-                    sym(symbols, RowSymbol::Queued),
-                    "queued"
-                )));
-                bar.set_message(format_item_msg(
-                    &empty_bytes_col(),
-                    &colors.empty_badge(),
-                    &item_label(label, op_kind),
-                ));
-                inner.item_bars.insert(item_id, bar);
+                // For grouped operations, don't create a bar on queue —
+                // create lazily on first phase change.
+                if inner.state.operation.total_groups.is_some() {
+                    // State will be reduced at the end of emit; no bar created yet.
+                } else {
+                    let bar = inner.multi.add(ProgressBar::new(1));
+                    bar.set_style(item_style());
+                    let op_kind = &inner.state.operation.kind;
+                    bar.set_prefix(colors.dim(&format!(
+                        "{} {:<7}",
+                        sym(symbols, RowSymbol::Queued),
+                        "queued"
+                    )));
+                    bar.set_message(format_item_msg(
+                        &empty_bytes_col(),
+                        &colors.empty_badge(),
+                        &item_label(label, op_kind),
+                    ));
+                    inner.item_bars.insert(item_id, bar);
+                }
             }
 
             DownloadEvent::ItemQualityResolved { item_id, quality } => {
@@ -143,6 +163,16 @@ impl ProgressSink for IndicatifSink {
 
             DownloadEvent::ItemPhaseChanged { item_id, phase } => {
                 let item_id = *item_id;
+                if !inner.item_bars.contains_key(&item_id) {
+                    // Lazy creation for grouped operations.
+                    let anchor = inner
+                        .last_group_bar
+                        .as_ref()
+                        .unwrap_or(&inner.overall_bar);
+                    let bar = inner.multi.insert_after(anchor, ProgressBar::new(1));
+                    bar.set_style(item_style());
+                    inner.item_bars.insert(item_id, bar);
+                }
                 if let Some(bar) = inner.item_bars.get(&item_id) {
                     bar.set_prefix(colors.phase_prefix(symbols, phase));
                     if !matches!(phase, DownloadPhase::Downloading | DownloadPhase::Copying) {
@@ -206,6 +236,77 @@ impl ProgressSink for IndicatifSink {
                     bar.finish_with_message(msg);
                 }
                 inner.overall_bar.inc(1);
+                // Update parent group bar if item belongs to a group.
+                if let Some(item) = inner.state.items.get(&item_id) {
+                    if let Some(gid) = item.group_id {
+                        if let Some(group_bar) = inner.group_bars.get(&gid) {
+                            group_bar.inc(1);
+                        }
+                    }
+                }
+            }
+
+            // ── Group lifecycle ───────────────────────────────────────────
+            DownloadEvent::GroupStarted {
+                group_id,
+                label,
+                total_items,
+                kind,
+                ..
+            } => {
+                let group_id = *group_id;
+                let total = total_items.unwrap_or(0);
+                let anchor = inner
+                    .last_group_bar
+                    .as_ref()
+                    .unwrap_or(&inner.overall_bar);
+                let bar = inner.multi.insert_after(anchor, ProgressBar::new(total));
+                bar.set_style(group_style());
+                let kind_label = operation_kind_label(kind);
+                bar.set_prefix(colors.dim(&format!("  {kind_label:>10}")));
+                let group_label = match &label.artist {
+                    Some(artist) => format!("{artist} - {}", label.title),
+                    None => label.title.clone(),
+                };
+                bar.set_message(format!("{:>3}/{:<3}   {group_label}", 0, total));
+                inner.last_group_bar = Some(bar.clone());
+                inner.group_bars.insert(group_id, bar);
+            }
+
+            DownloadEvent::GroupFinished { group_id, outcome } => {
+                let group_id = *group_id;
+                if let Some(bar) = inner.group_bars.get(&group_id) {
+                    let msg = match outcome {
+                        GroupOutcome::Done => colors.green("done"),
+                        GroupOutcome::Partial { failed } => {
+                            colors.yellow(&format!(
+                                "{} ok, {failed} failed",
+                                bar.position().saturating_sub(*failed)
+                            ))
+                        }
+                        GroupOutcome::Failed { message } => {
+                            colors.red(&format!("failed: {message}"))
+                        }
+                        _ => "done".to_owned(),
+                    };
+                    // Read label from state before reduce removes the group.
+                    let group_label = inner
+                        .state
+                        .groups
+                        .get(&group_id)
+                        .map(|g| match &g.label.artist {
+                            Some(artist) => format!("{artist} - {}", g.label.title),
+                            None => g.label.title.clone(),
+                        })
+                        .unwrap_or_default();
+                    let total = bar.length().unwrap_or(0);
+                    bar.set_prefix(colors.green(&format!(
+                        "  {:>10}",
+                        operation_kind_label(&OperationKind::Album)
+                    )));
+                    bar.set_message(format!("{total:>3}/{total:<3}   {group_label}  {msg}"));
+                    bar.finish();
+                }
             }
 
             // ── Artifacts: silent during download ─────────────────────────
@@ -554,6 +655,12 @@ fn overall_style() -> ProgressStyle {
 /// Item bars are indented 2 spaces relative to the overall bar.
 fn item_style() -> ProgressStyle {
     ProgressStyle::with_template("  {prefix:>12} [{bar:30.cyan/blue}] {msg}")
+        .unwrap_or_else(|_| ProgressStyle::default_bar())
+}
+
+/// Group bars are indented 2 spaces, same as item bars.
+fn group_style() -> ProgressStyle {
+    ProgressStyle::with_template("  {prefix} [{bar:20.cyan/blue}] {msg}")
         .unwrap_or_else(|_| ProgressStyle::default_bar())
 }
 
