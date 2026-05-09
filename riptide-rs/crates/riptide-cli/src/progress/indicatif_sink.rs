@@ -112,7 +112,11 @@ impl ProgressSink for IndicatifSink {
                     sym(symbols, RowSymbol::Queued),
                     "queued"
                 )));
-                bar.set_message(format_item_msg("", "", &item_label(label, op_kind)));
+                bar.set_message(format_item_msg(
+                    &empty_bytes_col(),
+                    &colors.empty_badge(),
+                    &item_label(label, op_kind),
+                ));
                 inner.item_bars.insert(item_id, bar);
             }
 
@@ -123,7 +127,11 @@ impl ProgressSink for IndicatifSink {
                     if let Some(item) = inner.state.items.get(&item_id) {
                         let label = item_label(&item.label, op_kind);
                         let badge = colors.quality_badge(quality);
-                        bar.set_message(format_item_msg("", &badge, &label));
+                        bar.set_message(format_item_msg(
+                            &empty_bytes_col(),
+                            &badge,
+                            &label,
+                        ));
                     }
                 }
             }
@@ -157,7 +165,7 @@ impl ProgressSink for IndicatifSink {
                             .as_ref()
                             .map(|q| colors.quality_badge(q))
                             .unwrap_or_default();
-                        let bytes = colors.cyan(&format_bytes(
+                        let bytes = colors.cyan(&format_bytes_padded(
                             progress.bytes_done,
                             progress.bytes_total,
                         ));
@@ -176,14 +184,18 @@ impl ProgressSink for IndicatifSink {
                             .quality
                             .as_ref()
                             .map(|q| colors.quality_badge(q))
-                            .unwrap_or_default();
+                            .unwrap_or_else(|| colors.empty_badge());
                         let detail = match outcome {
                             ItemOutcome::Failed { message } => {
                                 format!("  {}", colors.red(message))
                             }
                             _ => String::new(),
                         };
-                        format_item_msg("", &badge, &format!("{label}{detail}"))
+                        format_item_msg(
+                            &empty_bytes_col(),
+                            &badge,
+                            &format!("{label}{detail}"),
+                        )
                     } else {
                         String::new()
                     };
@@ -350,28 +362,77 @@ impl Colors {
         }
     }
 
-    /// Colours a quality badge per the spec.
+    /// Colours a quality badge per the spec, padded to `BADGE_COL` width
+    /// **before** ANSI wrapping so columns stay aligned.
     fn quality_badge(self, badge: &riptide_progress::QualityBadge) -> String {
         let raw = format!("{} {}", badge.symbol_char(), badge.text);
+        let padded = format!("{raw:<BADGE_COL$}");
         match badge.symbol_kind {
-            QualitySymbol::Lossless => self.cyan(&raw),
-            QualitySymbol::HiRes => self.yellow_bold(&raw),
-            QualitySymbol::Low => self.dim(&raw),
-            _ => raw,
+            QualitySymbol::Lossless => self.cyan(&padded),
+            QualitySymbol::HiRes => self.yellow_bold(&padded),
+            QualitySymbol::Low => self.dim(&padded),
+            _ => padded,
         }
+    }
+
+    /// Returns an empty badge column of `BADGE_COL` spaces.
+    fn empty_badge(self) -> String {
+        " ".repeat(BADGE_COL)
     }
 }
 
 // ── Formatting helpers ──────────────────────────────────────────────────────
 
+/// Assembles the item message from pre-padded, pre-coloured columns.
+///
+/// Each column is padded to its visual width **before** ANSI codes are applied
+/// so that escape sequences don't throw off alignment.
 fn format_item_msg(bytes: &str, badge: &str, label: &str) -> String {
-    format!("{bytes:>22} {badge:<14} {label}")
+    format!("{bytes} {badge} {label}")
 }
 
-fn format_bytes(done: u64, total: Option<u64>) -> String {
-    match total {
-        Some(t) => format!("{}/{}", HumanBytes(done), HumanBytes(t)),
+/// Formats byte progress compactly as `3.5/24.0 MiB` and right-pads to
+/// `BYTES_COL` visual width **before** any ANSI wrapping.
+fn format_bytes_padded(done: u64, total: Option<u64>) -> String {
+    let raw = match total {
+        Some(t) => compact_bytes(done, t),
         None => format!("{}", HumanBytes(done)),
+    };
+    format!("{raw:>BYTES_COL$}")
+}
+
+/// Returns an empty string of `BYTES_COL` spaces (used when no transfer is active).
+fn empty_bytes_col() -> String {
+    " ".repeat(BYTES_COL)
+}
+
+/// Visual width of the bytes column.
+const BYTES_COL: usize = 18;
+
+/// Visual width of the quality badge column.
+const BADGE_COL: usize = 14;
+
+/// Formats `done/total` using a shared unit: `3.5/24.0 MiB`.
+fn compact_bytes(done: u64, total: u64) -> String {
+    // Pick the unit from the larger value (total).
+    let (divisor, unit) = byte_unit(total);
+    let d = done as f64 / divisor;
+    let t = total as f64 / divisor;
+    format!("{d:.2}/{t:.2} {unit}")
+}
+
+fn byte_unit(bytes: u64) -> (f64, &'static str) {
+    const KIB: u64 = 1024;
+    const MIB: u64 = 1024 * 1024;
+    const GIB: u64 = 1024 * 1024 * 1024;
+    if bytes >= GIB {
+        (GIB as f64, "GiB")
+    } else if bytes >= MIB {
+        (MIB as f64, "MiB")
+    } else if bytes >= KIB {
+        (KIB as f64, "KiB")
+    } else {
+        (1.0, "B")
     }
 }
 
