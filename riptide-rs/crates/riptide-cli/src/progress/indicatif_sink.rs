@@ -4,6 +4,16 @@
 //! active to completed via `finish_with_message`. Artifact events are silent
 //! during download; only the final summary reports them.
 
+#![allow(
+    clippy::cast_precision_loss,
+    clippy::collapsible_match,
+    clippy::map_unwrap_or,
+    clippy::match_same_arms,
+    clippy::missing_const_for_fn,
+    clippy::option_if_let_else,
+    clippy::unused_self
+)]
+
 use crate::progress::{
     options::{ColorMode, CompletionDetail, ProgressDetail, SymbolsMode},
     symbols::{resolve_symbols, symbol_for, SymbolSet},

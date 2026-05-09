@@ -30,7 +30,7 @@ impl TidalProvider {
     /// Fetches artist albums needed for a TIDAL-specific download selection.
     pub async fn artist_albums_for_selection(
         &self,
-        id: &str,
+        id: &riptide_core::ResourceId,
         selection: ArtistAlbumSelection,
     ) -> TidalResult<Vec<Album>> {
         self.client.artist_albums_for_selection(id, selection).await
@@ -50,31 +50,31 @@ impl Resolver for TidalProvider {
         match reference.kind {
             riptide_core::ResourceKind::Track => self
                 .client
-                .track(reference.id.as_str())
+                .track(&reference.id)
                 .await
                 .map(CatalogEntity::Track)
                 .map_err(TidalError::into_core),
             riptide_core::ResourceKind::Video => self
                 .client
-                .video(reference.id.as_str())
+                .video(&reference.id)
                 .await
                 .map(CatalogEntity::Video)
                 .map_err(TidalError::into_core),
             riptide_core::ResourceKind::Album => self
                 .client
-                .album(reference.id.as_str())
+                .album(&reference.id)
                 .await
                 .map(CatalogEntity::Album)
                 .map_err(TidalError::into_core),
             riptide_core::ResourceKind::Playlist => self
                 .client
-                .playlist(reference.id.as_str())
+                .playlist(&reference.id)
                 .await
                 .map(CatalogEntity::Playlist)
                 .map_err(TidalError::into_core),
             riptide_core::ResourceKind::Artist => self
                 .client
-                .artist(reference.id.as_str())
+                .artist(&reference.id)
                 .await
                 .map(CatalogEntity::Artist)
                 .map_err(TidalError::into_core),
@@ -86,6 +86,11 @@ impl Resolver for TidalProvider {
                     owner: None,
                 }))
             }
+            _ => Err(CoreError::UnsupportedResourceKind {
+                provider: self.id.clone(),
+                kind: reference.kind,
+                operation: "resolve",
+            }),
         }
     }
 }
@@ -133,7 +138,7 @@ impl StreamProvider for TidalProvider {
 impl LyricsProvider for TidalProvider {
     async fn lyrics(&self, reference: &MediaRef) -> CoreResult<Option<Lyrics>> {
         self.client
-            .lyrics(reference.id.as_str())
+            .lyrics(&reference.id)
             .await
             .map(Some)
             .map_err(TidalError::into_core)

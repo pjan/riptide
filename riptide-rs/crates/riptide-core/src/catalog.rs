@@ -23,6 +23,7 @@ pub enum ExternalIdKind {
 }
 
 /// Artist role within a specific credit context.
+#[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ArtistRole {
@@ -189,6 +190,7 @@ pub struct Collection {
 }
 
 /// Generic collection kind for non-playlist provider groupings.
+#[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum CollectionKind {
@@ -205,6 +207,7 @@ pub enum CollectionKind {
 }
 
 /// Any provider-neutral catalog entity.
+#[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum CatalogEntity {

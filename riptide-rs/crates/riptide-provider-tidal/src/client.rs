@@ -7,8 +7,8 @@ use crate::{
 };
 use reqwest::{StatusCode, Url};
 use riptide_core::{
-    Album, Artist, AudioQualityRequest, CatalogEntity, MediaRef, Playlist, ResourceKind,
-    StreamVariant, Track, Video, VideoQualityRequest,
+    Album, Artist, AudioQualityRequest, CatalogEntity, MediaRef, Playlist, ResourceId,
+    ResourceKind, StreamVariant, Track, Video, VideoQualityRequest,
 };
 use serde::de::DeserializeOwned;
 use std::time::Duration;
@@ -81,37 +81,53 @@ impl TidalClient {
     }
 
     /// Fetches a track.
-    pub async fn track(&self, id: &str) -> TidalResult<Track> {
-        convert::track(self.get_json(&format!("tracks/{id}"), &[], ttl()).await?)
-    }
-
-    /// Fetches a video.
-    pub async fn video(&self, id: &str) -> TidalResult<Video> {
-        convert::video(self.get_json(&format!("videos/{id}"), &[], ttl()).await?)
-    }
-
-    /// Fetches an album.
-    pub async fn album(&self, id: &str) -> TidalResult<Album> {
-        convert::album(self.get_json(&format!("albums/{id}"), &[], ttl()).await?)
-    }
-
-    /// Fetches a playlist.
-    pub async fn playlist(&self, id: &str) -> TidalResult<Playlist> {
-        convert::playlist(
-            self.get_json(&format!("playlists/{id}"), &[], ApiCachePolicy::Revalidate)
+    pub async fn track(&self, id: &ResourceId) -> TidalResult<Track> {
+        convert::track(
+            self.get_json(&format!("tracks/{}", id.as_str()), &[], ttl())
                 .await?,
         )
     }
 
+    /// Fetches a video.
+    pub async fn video(&self, id: &ResourceId) -> TidalResult<Video> {
+        convert::video(
+            self.get_json(&format!("videos/{}", id.as_str()), &[], ttl())
+                .await?,
+        )
+    }
+
+    /// Fetches an album.
+    pub async fn album(&self, id: &ResourceId) -> TidalResult<Album> {
+        convert::album(
+            self.get_json(&format!("albums/{}", id.as_str()), &[], ttl())
+                .await?,
+        )
+    }
+
+    /// Fetches a playlist.
+    pub async fn playlist(&self, id: &ResourceId) -> TidalResult<Playlist> {
+        convert::playlist(
+            self.get_json(
+                &format!("playlists/{}", id.as_str()),
+                &[],
+                ApiCachePolicy::Revalidate,
+            )
+            .await?,
+        )
+    }
+
     /// Fetches an artist.
-    pub async fn artist(&self, id: &str) -> TidalResult<Artist> {
-        convert::artist(self.get_json(&format!("artists/{id}"), &[], ttl()).await?)
+    pub async fn artist(&self, id: &ResourceId) -> TidalResult<Artist> {
+        convert::artist(
+            self.get_json(&format!("artists/{}", id.as_str()), &[], ttl())
+                .await?,
+        )
     }
 
     /// Fetches lyrics.
-    pub async fn lyrics(&self, id: &str) -> TidalResult<riptide_core::Lyrics> {
+    pub async fn lyrics(&self, id: &ResourceId) -> TidalResult<riptide_core::Lyrics> {
         convert::lyrics(
-            self.get_json(&format!("tracks/{id}/lyrics"), &[], ttl())
+            self.get_json(&format!("tracks/{}/lyrics", id.as_str()), &[], ttl())
                 .await?,
         )
     }
@@ -122,13 +138,10 @@ impl TidalClient {
         reference: &MediaRef,
         quality: AudioQualityRequest,
     ) -> TidalResult<StreamVariant> {
-        let params = vec![
-            (
-                "audioquality".to_owned(),
-                stream::audio_quality_request_label(quality).to_owned(),
-            ),
-            ("playbackmode".to_owned(), "STREAM".to_owned()),
-            ("assetpresentation".to_owned(), "FULL".to_owned()),
+        let params = [
+            ("audioquality", stream::audio_quality_request_label(quality)),
+            ("playbackmode", "STREAM"),
+            ("assetpresentation", "FULL"),
         ];
         let raw: model::TidalStreamResponse = self
             .get_json(
@@ -146,13 +159,10 @@ impl TidalClient {
         reference: &MediaRef,
         quality: VideoQualityRequest,
     ) -> TidalResult<StreamVariant> {
-        let params = vec![
-            (
-                "videoquality".to_owned(),
-                stream::video_quality_request_label(quality).to_owned(),
-            ),
-            ("playbackmode".to_owned(), "STREAM".to_owned()),
-            ("assetpresentation".to_owned(), "FULL".to_owned()),
+        let params = [
+            ("videoquality", stream::video_quality_request_label(quality)),
+            ("playbackmode", "STREAM"),
+            ("assetpresentation", "FULL"),
         ];
         let raw: model::TidalVideoStreamResponse = self
             .get_json(
@@ -167,15 +177,15 @@ impl TidalClient {
     /// Fetches ordered children for album and playlist resources.
     pub async fn children(&self, reference: &MediaRef) -> TidalResult<Vec<CatalogEntity>> {
         match reference.kind {
-            ResourceKind::Album => self.album_items(reference.id.as_str()).await,
-            ResourceKind::Playlist => self.playlist_items(reference.id.as_str()).await,
+            ResourceKind::Album => self.album_items(&reference.id).await,
+            ResourceKind::Playlist => self.playlist_items(&reference.id).await,
             ResourceKind::Artist => Ok(self
-                .artist_albums_all(reference.id.as_str())
+                .artist_albums_all(&reference.id)
                 .await?
                 .into_iter()
                 .map(CatalogEntity::Album)
                 .collect()),
-            ResourceKind::Mix => self.mix_items(reference.id.as_str()).await,
+            ResourceKind::Mix => self.mix_items(&reference.id).await,
             kind => Err(TidalError::UnsupportedCapability {
                 capability: match kind {
                     ResourceKind::Track => "track children",
@@ -184,24 +194,25 @@ impl TidalClient {
                     | ResourceKind::Playlist
                     | ResourceKind::Artist
                     | ResourceKind::Mix => unreachable!(),
+                    _ => "unknown resource children",
                 },
             }),
         }
     }
 
     /// Paginates artist albums.
-    pub async fn artist_albums(&self, id: &str) -> TidalResult<Vec<Album>> {
-        self.paged_albums(&format!("artists/{id}/albums"), "ALBUMS")
+    pub async fn artist_albums(&self, id: &ResourceId) -> TidalResult<Vec<Album>> {
+        self.paged_albums(&format!("artists/{}/albums", id.as_str()), "ALBUMS")
             .await
     }
 
     /// Paginates artist singles and EPs.
-    pub async fn artist_singles(&self, id: &str) -> TidalResult<Vec<Album>> {
-        self.paged_albums(&format!("artists/{id}/albums"), "EPSANDSINGLES")
+    pub async fn artist_singles(&self, id: &ResourceId) -> TidalResult<Vec<Album>> {
+        self.paged_albums(&format!("artists/{}/albums", id.as_str()), "EPSANDSINGLES")
             .await
     }
 
-    pub(crate) async fn artist_albums_all(&self, id: &str) -> TidalResult<Vec<Album>> {
+    pub(crate) async fn artist_albums_all(&self, id: &ResourceId) -> TidalResult<Vec<Album>> {
         let albums = self.artist_albums(id).await?;
         let singles = self.artist_singles(id).await?;
         Ok(deduplicate_albums_by_id(
@@ -211,7 +222,7 @@ impl TidalClient {
 
     pub(crate) async fn artist_albums_for_selection(
         &self,
-        id: &str,
+        id: &ResourceId,
         selection: ArtistAlbumSelection,
     ) -> TidalResult<Vec<Album>> {
         match selection {
@@ -222,16 +233,19 @@ impl TidalClient {
     }
 
     /// Paginates mix items.
-    pub async fn mix_items(&self, id: &str) -> TidalResult<Vec<CatalogEntity>> {
-        self.paged_items(&format!("mixes/{id}/items"), 20).await
+    pub async fn mix_items(&self, id: &ResourceId) -> TidalResult<Vec<CatalogEntity>> {
+        self.paged_items(&format!("mixes/{}/items", id.as_str()), 20)
+            .await
     }
 
-    async fn album_items(&self, id: &str) -> TidalResult<Vec<CatalogEntity>> {
-        self.paged_items(&format!("albums/{id}/items"), 20).await
+    async fn album_items(&self, id: &ResourceId) -> TidalResult<Vec<CatalogEntity>> {
+        self.paged_items(&format!("albums/{}/items", id.as_str()), 20)
+            .await
     }
 
-    async fn playlist_items(&self, id: &str) -> TidalResult<Vec<CatalogEntity>> {
-        self.paged_items(&format!("playlists/{id}/items"), 20).await
+    async fn playlist_items(&self, id: &ResourceId) -> TidalResult<Vec<CatalogEntity>> {
+        self.paged_items(&format!("playlists/{}/items", id.as_str()), 20)
+            .await
     }
 
     async fn paged_albums(&self, endpoint: &str, filter: &str) -> TidalResult<Vec<Album>> {
@@ -239,10 +253,12 @@ impl TidalClient {
         let limit = 20;
         let mut output = Vec::new();
         loop {
-            let params = vec![
-                ("filter".to_owned(), filter.to_owned()),
-                ("limit".to_owned(), limit.to_string()),
-                ("offset".to_owned(), offset.to_string()),
+            let limit_param = limit.to_string();
+            let offset_param = offset.to_string();
+            let params = [
+                ("filter", filter),
+                ("limit", limit_param.as_str()),
+                ("offset", offset_param.as_str()),
             ];
             let page: model::Items<model::TidalAlbum> =
                 self.get_json(endpoint, &params, ttl()).await?;
@@ -265,9 +281,11 @@ impl TidalClient {
         let mut offset = 0;
         let mut output = Vec::new();
         loop {
-            let params = vec![
-                ("limit".to_owned(), limit.to_string()),
-                ("offset".to_owned(), offset.to_string()),
+            let limit_param = limit.to_string();
+            let offset_param = offset.to_string();
+            let params = [
+                ("limit", limit_param.as_str()),
+                ("offset", offset_param.as_str()),
             ];
             let page: model::Items<serde_json::Value> =
                 self.get_json(endpoint, &params, ttl()).await?;
@@ -285,7 +303,7 @@ impl TidalClient {
 
     /// Searches TIDAL.
     pub async fn search(&self, query: &str) -> TidalResult<SearchResults> {
-        let extra_params = vec![("query".to_owned(), query.to_owned())];
+        let extra_params = [("query", query)];
         let raw: model::TidalSearch = self
             .get_json("search", &extra_params, ApiCachePolicy::NoCache)
             .await?;
@@ -350,14 +368,14 @@ impl TidalClient {
     async fn get_json<T: DeserializeOwned>(
         &self,
         endpoint: &str,
-        extra_params: &[(String, String)],
+        extra_params: &[(&str, &str)],
         policy: ApiCachePolicy,
     ) -> TidalResult<T> {
         let token = self.token_for_request(endpoint).await?;
-        let country_code = token.country_code.as_str().to_owned();
-        let mut params = vec![("countryCode".to_owned(), country_code.clone())];
+        let country_code = token.country_code.as_str();
+        let mut params = vec![("countryCode", country_code)];
         params.extend_from_slice(extra_params);
-        let key = CacheKey::new("GET", endpoint, Some(&country_code), &params);
+        let key = CacheKey::new("GET", endpoint, Some(country_code), &params);
         if let ApiCachePolicy::Ttl(_) = policy {
             if let Some(value) = self.cache.get(&key).await? {
                 return serde_json::from_value(value).map_err(|error| {
@@ -414,7 +432,7 @@ impl TidalClient {
     async fn fetch_value(
         &self,
         endpoint: &str,
-        params: &[(String, String)],
+        params: &[(&str, &str)],
         token: &TidalTokenState,
         allow_refresh: bool,
     ) -> TidalResult<serde_json::Value> {
@@ -490,7 +508,9 @@ fn convert_catalog_item(value: &serde_json::Value) -> TidalResult<CatalogEntity>
         .or_else(|| item.get("type"))
         .and_then(serde_json::Value::as_str)
         .unwrap_or_default();
-    if kind.eq_ignore_ascii_case("video") || item.get("quality").is_some() {
+    // TIDAL item lists expose the catalog kind in the wrapper or item `type` field.
+    // Do not infer video-ness from media-specific fields; those can drift by endpoint.
+    if kind.eq_ignore_ascii_case("video") {
         return serde_json::from_value::<model::TidalVideo>(item)
             .map_err(|error| TidalError::InvalidResponse {
                 field: "items.video".to_owned(),
@@ -584,5 +604,58 @@ mod tests {
             hires_lossless: false,
             cover: None,
         })
+    }
+
+    #[test]
+    fn catalog_item_uses_wrapper_type_for_video_detection() -> TidalResult<()> {
+        let value = serde_json::json!({
+            "type": "video",
+            "item": {
+                "id": 42,
+                "title": "Video Title",
+                "duration": 120,
+                "quality": "HIGH"
+            }
+        });
+
+        let entity = convert_catalog_item(&value)?;
+
+        assert!(matches!(entity, CatalogEntity::Video(_)));
+        Ok(())
+    }
+
+    #[test]
+    fn catalog_item_uses_item_type_for_video_detection() -> TidalResult<()> {
+        let value = serde_json::json!({
+            "item": {
+                "type": "video",
+                "id": 42,
+                "title": "Video Title",
+                "duration": 120,
+                "quality": "HIGH"
+            }
+        });
+
+        let entity = convert_catalog_item(&value)?;
+
+        assert!(matches!(entity, CatalogEntity::Video(_)));
+        Ok(())
+    }
+
+    #[test]
+    fn catalog_item_quality_field_does_not_imply_video() -> TidalResult<()> {
+        let value = serde_json::json!({
+            "item": {
+                "id": 42,
+                "title": "Track Title",
+                "duration": 120,
+                "quality": "HIGH"
+            }
+        });
+
+        let entity = convert_catalog_item(&value)?;
+
+        assert!(matches!(entity, CatalogEntity::Track(_)));
+        Ok(())
     }
 }

@@ -1,89 +1,6 @@
 //! Identifier and label newtypes.
 
-use crate::{CoreError, CoreResult};
-use serde::{Deserialize, Deserializer, Serialize, Serializer};
-use std::{fmt, str::FromStr};
-
-macro_rules! non_empty_string_type {
-    ($(#[$meta:meta])* $name:ident) => {
-        $(#[$meta])*
-        #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
-        pub struct $name(String);
-
-        impl $name {
-            /// Creates a new value after rejecting empty or whitespace-only input.
-            pub fn new(value: impl Into<String>) -> CoreResult<Self> {
-                let value = value.into();
-                if value.trim().is_empty() {
-                    return Err(CoreError::EmptyValue {
-                        type_name: stringify!($name),
-                    });
-                }
-                Ok(Self(value))
-            }
-
-            /// Returns the underlying string.
-            pub fn as_str(&self) -> &str {
-                &self.0
-            }
-        }
-
-        impl fmt::Debug for $name {
-            fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-                f.debug_tuple(stringify!($name)).field(&self.0).finish()
-            }
-        }
-
-        impl fmt::Display for $name {
-            fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-                f.write_str(&self.0)
-            }
-        }
-
-        impl TryFrom<&str> for $name {
-            type Error = CoreError;
-
-            fn try_from(value: &str) -> Result<Self, Self::Error> {
-                Self::new(value)
-            }
-        }
-
-        impl TryFrom<String> for $name {
-            type Error = CoreError;
-
-            fn try_from(value: String) -> Result<Self, Self::Error> {
-                Self::new(value)
-            }
-        }
-
-        impl FromStr for $name {
-            type Err = CoreError;
-
-            fn from_str(value: &str) -> Result<Self, Self::Err> {
-                Self::new(value)
-            }
-        }
-
-        impl Serialize for $name {
-            fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-            where
-                S: Serializer,
-            {
-                serializer.serialize_str(&self.0)
-            }
-        }
-
-        impl<'de> Deserialize<'de> for $name {
-            fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-            where
-                D: Deserializer<'de>,
-            {
-                let value = String::deserialize(deserializer)?;
-                Self::new(value).map_err(serde::de::Error::custom)
-            }
-        }
-    };
-}
+use serde::{Deserialize, Serialize};
 
 non_empty_string_type!(
     /// Identifier for a registered provider.
@@ -115,6 +32,7 @@ non_empty_string_type!(
 );
 
 /// Provider-neutral media resource kind.
+#[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ResourceKind {

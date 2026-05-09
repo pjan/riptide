@@ -56,9 +56,9 @@ pub fn plan_download(variant: &StreamVariant, output_stem: PathBuf) -> DownloadP
 const fn extension_for_container(container: &ContainerKind) -> ContainerExtension {
     match container {
         ContainerKind::Flac => ContainerExtension::Flac,
-        ContainerKind::M4a | ContainerKind::ProviderSpecific(_) => ContainerExtension::M4a,
         ContainerKind::Mp4 => ContainerExtension::Mp4,
         ContainerKind::TransportStream => ContainerExtension::Ts,
+        _ => ContainerExtension::M4a,
     }
 }
 

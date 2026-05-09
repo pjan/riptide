@@ -107,8 +107,9 @@ fn hires_detail(stream: &StreamVariant) -> Option<String> {
 /// assert_eq!(format_track_number(TrackNumber::new(12).ok()), Some("12".to_owned()));
 /// assert_eq!(format_track_number(None), None);
 /// ```
+#[allow(clippy::single_option_map)]
 pub fn format_track_number(number: Option<TrackNumber>) -> Option<String> {
-    number.map(|n| format!("{:02}", n.get()))
+    number.map(|number| format!("{:02}", number.get()))
 }
 
 #[cfg(test)]

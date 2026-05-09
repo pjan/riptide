@@ -79,6 +79,7 @@ pub async fn post_process(path: PathBuf, steps: &[PostProcessStep]) -> MediaResu
                     let _ = tokio::fs::remove_file(source).await;
                 }
             }
+            _ => unreachable!("new post-process step not handled"),
         }
     }
     Ok(current)

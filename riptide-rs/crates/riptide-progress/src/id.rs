@@ -20,6 +20,7 @@ pub struct ItemId(u64);
 /// IDs are unique within their own namespace — a [`GroupId`] and an [`ItemId`]
 /// may share the same numeric value. The newtypes prevent accidental mixing.
 /// Tests must not assert stable numeric values unless they allocate explicitly.
+#[allow(clippy::struct_field_names)]
 pub struct ProgressIdAllocator {
     next_operation: AtomicU64,
     next_group: AtomicU64,
@@ -34,7 +35,7 @@ impl Default for ProgressIdAllocator {
 
 impl ProgressIdAllocator {
     /// Creates a new allocator. IDs start at 1.
-    pub fn new() -> Self {
+    pub const fn new() -> Self {
         Self {
             next_operation: AtomicU64::new(1),
             next_group: AtomicU64::new(1),

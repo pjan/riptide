@@ -15,7 +15,7 @@ use riptide_config::{
 use riptide_core::{
     Album, AudioQualityRequest, CatalogEntity, CollectionKind, CollectionProvider, CoverArtId,
     LyricsProvider, MediaDuration, MediaRef, ProviderQualityLabel, QualityRequest, Resolver,
-    StreamProvider, Track,
+    ResourceId, StreamProvider, Track,
 };
 use riptide_media::{
     download_segments, plan_download, post_process, resolve_manifest_async, DownloadOptions,
@@ -581,32 +581,27 @@ async fn run_list(options: &SharedOptions, command: ListCommand) -> Result<()> {
     match command {
         ListCommand::Track(options) => {
             let template = compile_optional_template(options.template)?;
-            let track = client
-                .track(&options.id)
-                .await
-                .context("failed to fetch track")?;
+            let id = list_resource_id(&options.id)?;
+            let track = client.track(&id).await.context("failed to fetch track")?;
             print_entity(&CatalogEntity::Track(track), template.as_ref())
         }
         ListCommand::Video(options) => {
             let template = compile_optional_template(options.template)?;
-            let video = client
-                .video(&options.id)
-                .await
-                .context("failed to fetch video")?;
+            let id = list_resource_id(&options.id)?;
+            let video = client.video(&id).await.context("failed to fetch video")?;
             print_entity(&CatalogEntity::Video(video), template.as_ref())
         }
         ListCommand::Album(options) => {
             let template = compile_optional_template(options.template)?;
-            let album = client
-                .album(&options.id)
-                .await
-                .context("failed to fetch album")?;
+            let id = list_resource_id(&options.id)?;
+            let album = client.album(&id).await.context("failed to fetch album")?;
             print_entity(&CatalogEntity::Album(album), template.as_ref())
         }
         ListCommand::Playlist(options) => {
             let template = compile_optional_template(options.template)?;
+            let id = list_resource_id(&options.id)?;
             let playlist = client
-                .playlist(&options.id)
+                .playlist(&id)
                 .await
                 .context("failed to fetch playlist")?;
             print_entity(&CatalogEntity::Playlist(playlist), template.as_ref())
@@ -644,6 +639,7 @@ async fn run_list(options: &SharedOptions, command: ListCommand) -> Result<()> {
     }
 }
 
+#[allow(clippy::too_many_lines)]
 async fn run_download(options: &SharedOptions, args: DownloadArgs) -> Result<DownloadSummary> {
     if args.urls.is_empty() {
         anyhow::bail!("at least one URL or resource reference is required");
@@ -653,12 +649,14 @@ async fn run_download(options: &SharedOptions, args: DownloadArgs) -> Result<Dow
         effective_download_options(&config.download, config.metadata, config.m3u, &args)
             .context("failed to build effective download options")?;
     prevalidate_template(&effective.template)?;
-    fs::create_dir_all(&effective.root).with_context(|| {
-        format!(
-            "failed to create download root {}",
-            effective.root.display()
-        )
-    })?;
+    tokio::fs::create_dir_all(&effective.root)
+        .await
+        .with_context(|| {
+            format!(
+                "failed to create download root {}",
+                effective.root.display()
+            )
+        })?;
 
     let provider = TidalProvider::new(tidal_client(options).await?);
     let http = http_client()?;
@@ -918,7 +916,7 @@ fn fill_download_queue(
     }
 }
 
-fn media_ref_for_entity(entity: &CatalogEntity) -> Option<&MediaRef> {
+const fn media_ref_for_entity(entity: &CatalogEntity) -> Option<&MediaRef> {
     match entity {
         CatalogEntity::Track(track) => Some(&track.id),
         CatalogEntity::Video(video) => Some(&video.id),
@@ -926,6 +924,7 @@ fn media_ref_for_entity(entity: &CatalogEntity) -> Option<&MediaRef> {
         CatalogEntity::Playlist(playlist) => Some(&playlist.id),
         CatalogEntity::Artist(artist) => artist.id.as_ref(),
         CatalogEntity::Collection(collection) => Some(&collection.id),
+        _ => None,
     }
 }
 
@@ -946,6 +945,7 @@ const fn resource_kind_label(kind: riptide_core::ResourceKind) -> &'static str {
         riptide_core::ResourceKind::Playlist => "playlist",
         riptide_core::ResourceKind::Artist => "artist",
         riptide_core::ResourceKind::Mix => "mix",
+        _ => "unknown",
     }
 }
 
@@ -1030,6 +1030,15 @@ fn operation_kind_and_label(
                 },
             )
         }
+        _ => (
+            OperationKind::Collection,
+            DisplayLabel {
+                title: fallback_input.to_owned(),
+                artist: None,
+                group: None,
+                track_number: None,
+            },
+        ),
     }
 }
 
@@ -1084,7 +1093,6 @@ async fn expand_download_entities(
             .filter_map(track_without_album)
             .collect(),
         CatalogEntity::Track(_) => vec![(entity, None)],
-        CatalogEntity::Video(_) => Vec::new(),
         CatalogEntity::Artist(_) => {
             return expand_artist_download_entities(provider, reference, singles_mode, skip_errors)
                 .await;
@@ -1096,6 +1104,7 @@ async fn expand_download_entities(
             .into_iter()
             .filter_map(track_without_album)
             .collect(),
+        _ => Vec::new(),
     };
     Ok(ExpansionResult {
         items,
@@ -1111,7 +1120,7 @@ async fn expand_artist_download_entities(
 ) -> Result<ExpansionResult> {
     let albums = provider
         .artist_albums_for_selection(
-            reference.id.as_str(),
+            &reference.id,
             artist_album_selection_for_singles_mode(singles_mode),
         )
         .await
@@ -1178,6 +1187,7 @@ const fn artist_album_selection_for_singles_mode(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn download_entity(
     provider: &TidalProvider,
     http: &HttpClient,
@@ -1282,7 +1292,7 @@ async fn download_entity(
     write_cover_sidecar_with_events(
         options,
         cover_cache,
-        cover_data.as_deref(),
+        cover_data,
         &final_path,
         operation_id,
         sink,
@@ -1426,7 +1436,8 @@ async fn execute_media_download(
     sink: &Arc<dyn ProgressSink>,
 ) -> Result<PreparedDownload> {
     let final_parent = final_path.parent().unwrap_or_else(|| Path::new("."));
-    fs::create_dir_all(final_parent)
+    tokio::fs::create_dir_all(final_parent)
+        .await
         .with_context(|| format!("failed to create {}", final_parent.display()))?;
     let temp_dir = tempfile::Builder::new()
         .prefix(".riptide-tmp-")
@@ -1546,7 +1557,8 @@ async fn fetch_cover_data(
 
 async fn persist_processed_file(processed: &Path, final_path: &Path) -> Result<()> {
     if let Some(parent) = final_path.parent() {
-        fs::create_dir_all(parent)
+        tokio::fs::create_dir_all(parent)
+            .await
             .with_context(|| format!("failed to create {}", parent.display()))?;
     }
     tokio::fs::rename(&processed, &final_path)
@@ -1611,7 +1623,7 @@ async fn write_lyrics_sidecar_with_events(
 async fn write_cover_sidecar_with_events(
     options: &EffectiveDownloadOptions,
     cover_cache: &CoverCache,
-    cover_data: Option<&[u8]>,
+    cover_data: Option<Arc<[u8]>>,
     final_path: &Path,
     operation_id: OperationId,
     sink: &Arc<dyn ProgressSink>,
@@ -1640,10 +1652,9 @@ async fn write_cover_sidecar_with_events(
         label: label.clone(),
         phase: DownloadPhase::WritingCover,
     });
-    let data = cover_data.to_vec();
     let result = tokio::task::spawn_blocking({
         let cover_path = cover_path.clone();
-        move || save_cover(&data, &cover_path)
+        move || save_cover(cover_data.as_ref(), &cover_path)
     })
     .await
     .context("failed to join cover writer")?
@@ -1677,8 +1688,7 @@ fn lyrics_sidecar_name(final_path: &Path) -> String {
     final_path
         .file_stem()
         .and_then(|s| s.to_str())
-        .map(|stem| format!("{stem}.lrc"))
-        .unwrap_or_else(|| "lyrics.lrc".to_owned())
+        .map_or_else(|| "lyrics.lrc".to_owned(), |stem| format!("{stem}.lrc"))
 }
 
 fn cover_sidecar_path(final_path: &Path) -> PathBuf {
@@ -1735,6 +1745,10 @@ fn compile_optional_template(template: Option<String>) -> Result<Option<Compiled
     template
         .map(|template| CompiledTemplate::parse(&template).context("failed to compile template"))
         .transpose()
+}
+
+fn list_resource_id(value: &str) -> Result<ResourceId> {
+    ResourceId::new(value).with_context(|| format!("invalid TIDAL resource ID `{value}`"))
 }
 
 fn prevalidate_template(template: &CompiledTemplate) -> Result<()> {
@@ -1879,7 +1893,7 @@ fn context_for_entity(entity: &CatalogEntity) -> TemplateContext {
                 updated: playlist.updated_at,
             })
         }
-        CatalogEntity::Artist(_) | CatalogEntity::Collection(_) => TemplateContext::new(now),
+        _ => TemplateContext::new(now),
     }
 }
 
@@ -1901,6 +1915,7 @@ fn entity_row(entity: &CatalogEntity) -> String {
             collection.id.id.as_str(),
             collection.title.as_deref().unwrap_or("")
         ),
+        _ => "unknown\t\t".to_owned(),
     }
 }
 
@@ -1912,6 +1927,7 @@ const fn entity_kind(entity: &CatalogEntity) -> &'static str {
         CatalogEntity::Playlist(_) => "playlist",
         CatalogEntity::Artist(_) => "artist",
         CatalogEntity::Collection(_) => "collection",
+        _ => "unknown",
     }
 }
 

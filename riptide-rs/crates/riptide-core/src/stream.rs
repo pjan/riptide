@@ -7,6 +7,7 @@ use serde::{Deserialize, Serialize};
 use url::Url;
 
 /// Media container kind.
+#[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ContainerKind {
@@ -23,6 +24,7 @@ pub enum ContainerKind {
 }
 
 /// Typed file extension derived from a media container.
+#[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ContainerExtension {
@@ -94,33 +96,10 @@ pub enum LyricsSource {
     External(LyricsSourceName),
 }
 
-/// Display-only lyrics source name.
-#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
-pub struct LyricsSourceName(String);
-
-impl LyricsSourceName {
-    /// Creates a new lyrics source name after rejecting empty input.
-    pub fn new(value: impl Into<String>) -> crate::CoreResult<Self> {
-        let value = value.into();
-        if value.trim().is_empty() {
-            return Err(crate::CoreError::EmptyValue {
-                type_name: "LyricsSourceName",
-            });
-        }
-        Ok(Self(value))
-    }
-
-    /// Returns the source name.
-    pub fn as_str(&self) -> &str {
-        &self.0
-    }
-}
-
-impl std::fmt::Debug for LyricsSourceName {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_tuple("LyricsSourceName").field(&self.0).finish()
-    }
-}
+non_empty_string_type!(
+    /// Display-only lyrics source name.
+    LyricsSourceName
+);
 
 /// Lyrics text and optional synchronized lyrics.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -134,6 +113,7 @@ pub struct Lyrics {
 }
 
 /// Provider-neutral post-processing intent.
+#[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum PostProcessStep {

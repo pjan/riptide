@@ -43,7 +43,7 @@ impl ProgressSink for PlainSink {
                 eprintln!("queued: {}", label.title);
             }
             DownloadEvent::ItemPhaseChanged { phase, .. } => {
-                eprintln!("  {:?}", phase);
+                eprintln!("  {phase:?}");
             }
             DownloadEvent::ItemFinished { outcome, .. } => match outcome {
                 ItemOutcome::Downloaded => eprintln!("  done"),

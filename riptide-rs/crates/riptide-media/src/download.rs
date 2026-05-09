@@ -3,7 +3,7 @@
 use crate::{MediaError, MediaResult};
 use futures_util::StreamExt;
 use std::{path::Path, time::Duration};
-use tokio::io::{AsyncReadExt, AsyncWriteExt, BufWriter};
+use tokio::io::{AsyncWriteExt, BufWriter};
 use url::Url;
 
 /// Segment download behavior.
@@ -49,6 +49,25 @@ pub async fn download_segments(
     options: DownloadOptions,
     progress: Option<&dyn DownloadProgress>,
 ) -> MediaResult<()> {
+    if let [url] = segments {
+        let result = download_segment_with_retries(
+            http,
+            url,
+            0,
+            output_path,
+            options,
+            progress,
+            segments.len(),
+        )
+        .await;
+        if result.is_err() {
+            let _ = tokio::fs::remove_file(output_path).await;
+        } else if let Some(progress) = progress {
+            progress.on_segment_complete(0, segments.len());
+        }
+        return result;
+    }
+
     let output_file = tokio::fs::File::create(output_path)
         .await
         .map_err(|source| MediaError::io("creating download output", source))?;
@@ -66,7 +85,12 @@ pub async fn download_segments(
             segments.len(),
         )
         .await?;
-        Box::pin(append_file(&mut output, &part_path)).await?;
+        let mut input = tokio::fs::File::open(&part_path)
+            .await
+            .map_err(|source| MediaError::io("opening segment part", source))?;
+        tokio::io::copy(&mut input, &mut output)
+            .await
+            .map_err(|source| MediaError::io("appending segment part", source))?;
         if let Some(progress) = progress {
             progress.on_segment_complete(index, segments.len());
         }
@@ -166,27 +190,6 @@ async fn download_one_segment(
         .map_err(|source| MediaError::io("flushing segment part", source))
 }
 
-async fn append_file(output: &mut BufWriter<tokio::fs::File>, path: &Path) -> MediaResult<()> {
-    let mut input = tokio::fs::File::open(path)
-        .await
-        .map_err(|source| MediaError::io("opening segment part", source))?;
-    let mut buffer = vec![0_u8; 64 * 1024].into_boxed_slice();
-    loop {
-        let read = input
-            .read(&mut buffer)
-            .await
-            .map_err(|source| MediaError::io("reading segment part", source))?;
-        if read == 0 {
-            break;
-        }
-        output
-            .write_all(&buffer[..read])
-            .await
-            .map_err(|source| MediaError::io("appending segment part", source))?;
-    }
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -245,6 +248,42 @@ mod tests {
 
         server.await??;
         assert_eq!(tokio::fs::read(output).await?, b"aaabbb");
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn single_segment_download_writes_directly_to_output(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let listener = TcpListener::bind("127.0.0.1:0").await?;
+        let addr = listener.local_addr()?;
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await?;
+            let mut buffer = [0_u8; 1024];
+            let _read = socket.read(&mut buffer).await?;
+            socket
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 6\r\n\r\nsingle")
+                .await?;
+            Ok::<_, std::io::Error>(())
+        });
+
+        let segments = vec![Url::parse(&format!("http://{addr}/single"))?];
+        let dir = tempfile::tempdir()?;
+        let output = dir.path().join("out.bin");
+        download_segments(
+            &reqwest::Client::new(),
+            &segments,
+            &output,
+            DownloadOptions::default(),
+            None,
+        )
+        .await?;
+
+        server.await??;
+        assert_eq!(tokio::fs::read(output).await?, b"single");
+        let mut entries = tokio::fs::read_dir(dir.path()).await?;
+        while let Some(entry) = entries.next_entry().await? {
+            assert!(!entry.file_name().to_string_lossy().contains(".part-"));
+        }
         Ok(())
     }
 }

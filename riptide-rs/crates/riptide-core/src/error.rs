@@ -70,6 +70,7 @@ pub enum CoreError {
 }
 
 /// Provider-neutral error category for provider-specific failures.
+#[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ProviderErrorKind {
     /// Authentication failed or credentials are missing.

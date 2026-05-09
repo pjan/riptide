@@ -28,10 +28,10 @@ impl CacheKey {
         method: &str,
         endpoint: &str,
         country_code: Option<&str>,
-        params: &[(String, String)],
+        params: &[(&str, &str)],
     ) -> Self {
         let mut params = params.to_vec();
-        params.sort();
+        params.sort_unstable();
         let encoded = params
             .into_iter()
             .map(|(key, value)| format!("{key}={value}"))
@@ -227,24 +227,8 @@ mod tests {
 
     #[test]
     fn cache_key_sorts_query_params() {
-        let left = CacheKey::new(
-            "GET",
-            "tracks/1",
-            Some("US"),
-            &[
-                ("b".to_owned(), "2".to_owned()),
-                ("a".to_owned(), "1".to_owned()),
-            ],
-        );
-        let right = CacheKey::new(
-            "GET",
-            "tracks/1",
-            Some("US"),
-            &[
-                ("a".to_owned(), "1".to_owned()),
-                ("b".to_owned(), "2".to_owned()),
-            ],
-        );
+        let left = CacheKey::new("GET", "tracks/1", Some("US"), &[("b", "2"), ("a", "1")]);
+        let right = CacheKey::new("GET", "tracks/1", Some("US"), &[("a", "1"), ("b", "2")]);
         assert_eq!(left, right);
         assert!(!left.as_str().contains("token"));
     }

@@ -108,7 +108,7 @@ pub fn write_tags(
     let tag_type = match container {
         ContainerExtension::Flac => TagType::VorbisComments,
         ContainerExtension::M4a | ContainerExtension::Mp4 => TagType::Mp4Ilst,
-        ContainerExtension::Ts => {
+        _ => {
             return Err(MetadataError::UnsupportedContainer {
                 extension: container,
             })

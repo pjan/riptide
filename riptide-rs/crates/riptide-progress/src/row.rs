@@ -40,9 +40,11 @@ pub struct OverallRow {
     pub bytes: Option<BytePair>,
 }
 
-/// Intermediate group row, rendered indented beneath the overall row for
-/// multi-group operations (e.g. `● album  5/8 tracks  Images and Words`
-/// under an artist operation). Not used for single-group commands.
+/// Intermediate group row, rendered indented beneath the overall row.
+///
+/// This is used for multi-group operations (e.g. `● album  5/8 tracks
+/// Images and Words` under an artist operation). It is not used for
+/// single-group commands.
 pub struct GroupRow {
     /// Group kind.
     pub kind: OperationKind,
@@ -390,7 +392,7 @@ pub fn build_completion_rows(state: &ProgressState) -> Vec<CompletionRow> {
 ///
 /// This mapping lives in `riptide-progress` (pure, no I/O). `riptide-cli` only
 /// decides which display character corresponds to a given `RowSymbol`.
-pub fn phase_to_symbol(phase: &DownloadPhase) -> RowSymbol {
+pub const fn phase_to_symbol(phase: &DownloadPhase) -> RowSymbol {
     match phase {
         DownloadPhase::Queued => RowSymbol::Queued,
         DownloadPhase::Downloading | DownloadPhase::Copying => RowSymbol::Active,
@@ -401,7 +403,7 @@ pub fn phase_to_symbol(phase: &DownloadPhase) -> RowSymbol {
     }
 }
 
-fn outcome_to_symbol(outcome: &ItemOutcome) -> RowSymbol {
+const fn outcome_to_symbol(outcome: &ItemOutcome) -> RowSymbol {
     match outcome {
         ItemOutcome::Downloaded | ItemOutcome::Copied | ItemOutcome::Enriched => RowSymbol::Done,
         ItemOutcome::Exists | ItemOutcome::Skipped { .. } => RowSymbol::Exists,
@@ -409,7 +411,7 @@ fn outcome_to_symbol(outcome: &ItemOutcome) -> RowSymbol {
     }
 }
 
-fn artifact_outcome_to_symbol(outcome: &ArtifactOutcome) -> RowSymbol {
+const fn artifact_outcome_to_symbol(outcome: &ArtifactOutcome) -> RowSymbol {
     match outcome {
         ArtifactOutcome::Written => RowSymbol::Done,
         ArtifactOutcome::Skipped { .. } => RowSymbol::Exists,
@@ -417,7 +419,7 @@ fn artifact_outcome_to_symbol(outcome: &ArtifactOutcome) -> RowSymbol {
     }
 }
 
-fn group_outcome_to_symbol(outcome: &GroupOutcome) -> RowSymbol {
+const fn group_outcome_to_symbol(outcome: &GroupOutcome) -> RowSymbol {
     match outcome {
         GroupOutcome::Done => RowSymbol::Done,
         GroupOutcome::Partial { .. } => RowSymbol::Exists,
@@ -425,7 +427,7 @@ fn group_outcome_to_symbol(outcome: &GroupOutcome) -> RowSymbol {
     }
 }
 
-fn artifact_kind_from_phase(phase: &DownloadPhase) -> ArtifactKind {
+const fn artifact_kind_from_phase(phase: &DownloadPhase) -> ArtifactKind {
     match phase {
         DownloadPhase::WritingCover => ArtifactKind::Cover,
         DownloadPhase::WritingLyrics => ArtifactKind::Lyrics,
@@ -460,19 +462,21 @@ fn format_item_label(label: &DisplayLabel, is_in_group: bool) -> String {
 
 /// Formats a [`DisplayLabel`] for an operation or group row.
 fn format_operation_label(label: &DisplayLabel) -> String {
-    match &label.artist {
-        Some(artist) => format!("{artist} - {}", label.title),
-        None => label.title.clone(),
-    }
+    label.artist.as_ref().map_or_else(
+        || label.title.clone(),
+        |artist| format!("{artist} - {}", label.title),
+    )
 }
 
 // ── Utility helpers ──────────────────────────────────────────────────────────
 
-fn operation_count_unit(kind: &OperationKind) -> CountUnit {
+const fn operation_count_unit(kind: &OperationKind) -> CountUnit {
     match kind {
-        OperationKind::Track => CountUnit::Tracks,
         OperationKind::Video => CountUnit::Videos,
-        OperationKind::Album | OperationKind::Playlist | OperationKind::Mix => CountUnit::Tracks,
+        OperationKind::Track
+        | OperationKind::Album
+        | OperationKind::Playlist
+        | OperationKind::Mix => CountUnit::Tracks,
         OperationKind::Artist | OperationKind::Collection => CountUnit::Albums,
         OperationKind::LocalTransfer => CountUnit::Files,
         OperationKind::MetadataEnrichment => CountUnit::Items,

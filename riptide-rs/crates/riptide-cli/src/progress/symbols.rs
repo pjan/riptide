@@ -1,5 +1,7 @@
 //! Symbol resolution: maps [`RowSymbol`] to display characters.
 
+#![allow(clippy::match_same_arms, clippy::missing_const_for_fn)]
+
 use crate::progress::options::SymbolsMode;
 use riptide_progress::RowSymbol;
 use std::io::IsTerminal;

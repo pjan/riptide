@@ -223,7 +223,7 @@ impl ProgressState {
     }
 
     /// Whether [`DownloadEvent::OperationFinished`] has been reduced.
-    pub fn is_finished(&self) -> bool {
+    pub const fn is_finished(&self) -> bool {
         self.finished
     }
 
@@ -232,6 +232,7 @@ impl ProgressState {
     /// Returns [`ProgressError`] for invalid transitions (duplicate IDs, unknown
     /// references, order violations). Errors are non-fatal — the caller may log
     /// and continue.
+    #[allow(clippy::too_many_lines)]
     pub fn reduce(&mut self, event: DownloadEvent) -> Result<(), ProgressError> {
         match event {
             DownloadEvent::OperationTotalsUpdated {
@@ -378,7 +379,7 @@ impl ProgressState {
                 let key = ArtifactKey {
                     operation_id,
                     group_id,
-                    item_id: item_id.clone(),
+                    item_id,
                     kind: kind.clone(),
                 };
                 // Remove from active artifacts. It is acceptable for
