@@ -58,6 +58,12 @@ pub struct ItemState {
     pub transfer: Option<TransferProgress>,
     /// Final output path, once known via `ItemOutputResolved`.
     pub output_path: Option<PathBuf>,
+    /// Previous bytes snapshot for rate calculation.
+    pub prev_bytes: u64,
+    /// Previous instant for rate calculation.
+    pub prev_instant: Option<std::time::Instant>,
+    /// Current transfer rate in bytes per second.
+    pub current_rate_bytes_per_sec: f64,
 }
 
 /// Active state for a group.
@@ -195,6 +201,8 @@ pub struct ProgressState {
     pub artifacts: IndexMap<ArtifactKey, ArtifactState>,
     /// Finished items, artifacts, and groups in completion order.
     pub completed: Vec<CompletedRecord>,
+    /// Cumulative bytes transferred by all finished items.
+    pub total_bytes_transferred: u64,
     finished: bool,
 }
 
@@ -218,6 +226,7 @@ impl ProgressState {
             items: IndexMap::new(),
             artifacts: IndexMap::new(),
             completed: Vec::new(),
+            total_bytes_transferred: 0,
             finished: false,
         }
     }
@@ -310,6 +319,9 @@ impl ProgressState {
                         phase: DownloadPhase::Queued,
                         transfer: None,
                         output_path: None,
+                        prev_bytes: 0,
+                        prev_instant: None,
+                        current_rate_bytes_per_sec: 0.0,
                     },
                 );
             }
@@ -342,6 +354,23 @@ impl ProgressState {
                     .items
                     .get_mut(&item_id)
                     .ok_or(ProgressError::UnknownItem(item_id))?;
+                let now = std::time::Instant::now();
+                if let Some(prev) = item.prev_instant {
+                    let elapsed = now.duration_since(prev).as_secs_f64();
+                    if elapsed > 0.01 {
+                        let delta_bytes = progress.bytes_done.saturating_sub(item.prev_bytes);
+                        #[allow(clippy::cast_precision_loss)]
+                        {
+                            item.current_rate_bytes_per_sec =
+                                delta_bytes as f64 / elapsed;
+                        }
+                        item.prev_bytes = progress.bytes_done;
+                        item.prev_instant = Some(now);
+                    }
+                } else {
+                    item.prev_bytes = progress.bytes_done;
+                    item.prev_instant = Some(now);
+                }
                 item.transfer = Some(progress);
             }
 
@@ -409,6 +438,8 @@ impl ProgressState {
                     .items
                     .shift_remove(&item_id)
                     .ok_or(ProgressError::UnknownItem(item_id))?;
+                self.total_bytes_transferred +=
+                    item.transfer.as_ref().map_or(0, |t| t.bytes_done);
                 // Increment parent group's done counter.
                 if let Some(gid) = item.group_id {
                     if let Some(group) = self.groups.get_mut(&gid) {
@@ -449,6 +480,14 @@ impl ProgressState {
         Ok(())
     }
 
+    /// Returns the sum of per-item transfer rates for all active items.
+    pub fn aggregate_rate(&self) -> f64 {
+        self.items
+            .values()
+            .map(|item| item.current_rate_bytes_per_sec)
+            .sum()
+    }
+
     /// Derives a [`ProgressSummary`] from the accumulated completed records.
     ///
     /// Call after reducing [`DownloadEvent::OperationFinished`]. The `elapsed`
@@ -462,16 +501,20 @@ impl ProgressState {
         let mut artifacts_failed = 0u64;
         let mut groups_done = 0u64;
         // Map from ArtifactKind -> (label_of_last_seen, count)
+        let mut failed_labels: Vec<String> = Vec::new();
         let mut artifact_counts: HashMap<ArtifactKind, (String, u64)> = HashMap::new();
 
         for record in &self.completed {
             match record {
-                CompletedRecord::Item { outcome, .. } => match outcome {
+                CompletedRecord::Item { outcome, label, .. } => match outcome {
                     ItemOutcome::Downloaded => downloaded += 1,
                     ItemOutcome::Copied => copied += 1,
                     ItemOutcome::Enriched => enriched += 1,
                     ItemOutcome::Exists | ItemOutcome::Skipped { .. } => skipped_existing += 1,
-                    ItemOutcome::Failed { .. } => failed += 1,
+                    ItemOutcome::Failed { .. } => {
+                        failed += 1;
+                        failed_labels.push(label.title.clone());
+                    }
                 },
                 CompletedRecord::Artifact {
                     outcome,
@@ -512,6 +555,8 @@ impl ProgressState {
             items_total: self.operation.total_items,
             elapsed,
             artifacts,
+            total_bytes: self.total_bytes_transferred,
+            failed_labels,
         }
     }
 }
@@ -825,5 +870,98 @@ mod tests {
         let summary = state.summary(None);
         assert_eq!(summary.failed, 1, "item failure must not be double-counted by group partial");
         assert_eq!(summary.groups_done, 1);
+    }
+
+    #[test]
+    fn total_bytes_accumulated_on_item_finish() -> Result<(), Box<dyn std::error::Error>> {
+        use crate::event::{TransferMode, TransferProgress};
+
+        let alloc = ProgressIdAllocator::new();
+        let config = test_config(&alloc);
+        let op_id = config.id;
+        let mut state = ProgressState::new(config);
+        let item_id = alloc.next_item_id();
+
+        state.reduce(DownloadEvent::ItemQueued {
+            operation_id: op_id,
+            group_id: None,
+            item_id,
+            kind: ItemKind::Track,
+            label: track_label("Pull Me Under", 1)?,
+            quality: None,
+        })?;
+
+        state.reduce(DownloadEvent::TransferUpdate {
+            item_id,
+            progress: TransferProgress {
+                mode: TransferMode::RemoteStream,
+                bytes_done: 1000,
+                bytes_total: Some(1000),
+                segments_done: 10,
+                segments_total: Some(10),
+            },
+        })?;
+
+        state.reduce(DownloadEvent::ItemFinished {
+            item_id,
+            outcome: ItemOutcome::Downloaded,
+        })?;
+
+        assert_eq!(state.total_bytes_transferred, 1000);
+        assert_eq!(state.summary(None).total_bytes, 1000);
+        Ok(())
+    }
+
+    #[test]
+    fn failed_labels_collected_in_summary() -> Result<(), Box<dyn std::error::Error>> {
+        let alloc = ProgressIdAllocator::new();
+        let config = test_config(&alloc);
+        let op_id = config.id;
+        let mut state = ProgressState::new(config);
+
+        let i1 = alloc.next_item_id();
+        let i2 = alloc.next_item_id();
+
+        state.reduce(DownloadEvent::ItemQueued {
+            operation_id: op_id,
+            group_id: None,
+            item_id: i1,
+            kind: ItemKind::Track,
+            label: track_label("Pull Me Under", 1)?,
+            quality: None,
+        })?;
+        state.reduce(DownloadEvent::ItemQueued {
+            operation_id: op_id,
+            group_id: None,
+            item_id: i2,
+            kind: ItemKind::Track,
+            label: track_label("Another Day", 2)?,
+            quality: None,
+        })?;
+
+        state.reduce(DownloadEvent::ItemFinished {
+            item_id: i1,
+            outcome: ItemOutcome::Downloaded,
+        })?;
+        state.reduce(DownloadEvent::ItemFinished {
+            item_id: i2,
+            outcome: ItemOutcome::Failed {
+                message: "error".to_owned(),
+            },
+        })?;
+
+        let summary = state.summary(None);
+        assert_eq!(summary.failed_labels, vec!["Another Day"]);
+        Ok(())
+    }
+
+    #[test]
+    fn aggregate_rate_sums_active_items() {
+        let alloc = ProgressIdAllocator::new();
+        let config = test_config(&alloc);
+        let state = ProgressState::new(config);
+
+        // No items have transfer updates, so aggregate rate should be 0.
+        assert!((state.aggregate_rate() - 0.0).abs() < f64::EPSILON);
     }
 }

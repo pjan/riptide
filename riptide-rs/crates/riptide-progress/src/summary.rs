@@ -40,4 +40,8 @@ pub struct ProgressSummary {
     pub elapsed: Option<time::Duration>,
     /// Per-kind artifact counts for written artifacts.
     pub artifacts: Vec<ArtifactSummary>,
+    /// Total bytes transferred across all finished items.
+    pub total_bytes: u64,
+    /// Display labels (titles) of items that finished with `Failed`.
+    pub failed_labels: Vec<String>,
 }
