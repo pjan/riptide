@@ -216,21 +216,27 @@ fn format_target(
 
 /// Renders the item summary text for the overall/total row in col2.
 ///
-/// Artist: `2 Albums // 24 Tracks`, Album/Playlist/Mix: `14 Tracks`.
-/// Unknown counts show `?`.
+/// Artist: `[1 of 2] Albums // [22 of 24] Tracks`.
+/// Album/Playlist/Mix: `[9 of 14] Tracks`.
+/// Unknown totals show `?`.
 fn format_total_col2(
     op_kind: &OperationKind,
+    groups_done: u64,
     total_groups: Option<u64>,
+    items_done: u64,
     total_items: Option<u64>,
     max_width: usize,
 ) -> String {
-    let items_str = total_items.map_or_else(|| "?".to_owned(), |n| n.to_string());
+    let items_total_str = total_items.map_or_else(|| "?".to_owned(), |n| n.to_string());
     let text = match op_kind {
         OperationKind::Artist => {
-            let groups_str = total_groups.map_or_else(|| "?".to_owned(), |n| n.to_string());
-            format!("{groups_str} Albums // {items_str} Tracks")
+            let groups_total_str =
+                total_groups.map_or_else(|| "?".to_owned(), |n| n.to_string());
+            format!(
+                "[{groups_done} of {groups_total_str}] Albums // [{items_done} of {items_total_str}] Tracks"
+            )
         }
-        _ => format!("{items_str} Tracks"),
+        _ => format!("[{items_done} of {items_total_str}] Tracks"),
     };
     truncate_pad(&text, max_width)
 }
@@ -576,8 +582,10 @@ fn assemble_item_row(
 }
 
 /// Assembles the total/overall row string.
+#[allow(clippy::too_many_arguments)]
 fn assemble_total_row(
     op_kind: &OperationKind,
+    groups_done: u64,
     total_groups: Option<u64>,
     items_done: u64,
     items_total: Option<u64>,
@@ -586,7 +594,14 @@ fn assemble_total_row(
     colors: Colors,
 ) -> String {
     let col1 = format!("{:<COL1_WIDTH$}", "Total");
-    let col2 = format_total_col2(op_kind, total_groups, items_total, layout.col2_width());
+    let col2 = format_total_col2(
+        op_kind,
+        groups_done,
+        total_groups,
+        items_done,
+        items_total,
+        layout.col2_width(),
+    );
 
     let pct = match items_total {
         Some(total) if total > 0 => (items_done as f64 / total as f64) * 100.0,
@@ -680,6 +695,7 @@ impl TuiSink {
             bar.set_style(text_style.clone());
             bar.set_message(assemble_total_row(
                 &config.kind,
+                0,
                 config.total_groups,
                 0,
                 config.total_items,
@@ -783,7 +799,7 @@ impl TuiInner {
     /// Update the overall/total bar.
     fn update_overall_bar(&self) {
         if let Some(ref bar) = self.overall_bar {
-            let done = self
+            let items_done = self
                 .state
                 .completed
                 .iter()
@@ -791,13 +807,21 @@ impl TuiInner {
                     matches!(r, riptide_progress::CompletedRecord::Item { .. })
                 })
                 .count() as u64;
-            let total = self.state.operation.total_items;
+            let groups_done = self
+                .state
+                .completed
+                .iter()
+                .filter(|r| {
+                    matches!(r, riptide_progress::CompletedRecord::Group { .. })
+                })
+                .count() as u64;
             let rate = self.state.aggregate_rate();
             let msg = assemble_total_row(
                 &self.state.operation.kind,
+                groups_done,
                 self.state.operation.total_groups,
-                done,
-                total,
+                items_done,
+                self.state.operation.total_items,
                 rate,
                 self.layout,
                 self.colors,
@@ -808,6 +832,7 @@ impl TuiInner {
 }
 
 impl ProgressSink for TuiSink {
+    #[allow(clippy::too_many_lines)]
     fn emit(&self, event: DownloadEvent) {
         let mut inner = self.lock();
 
@@ -895,7 +920,19 @@ impl ProgressSink for TuiSink {
                 let _ = inner.state.reduce(event);
                 let summary = inner.state.summary(Some(elapsed));
 
-                // Clear all indicatif bars.
+                // Finish all bars so indicatif releases them, then clear.
+                inner.header_bar.finish_and_clear();
+                inner.top_border_bar.finish_and_clear();
+                if let Some(ref bar) = inner.overall_bar {
+                    bar.finish_and_clear();
+                }
+                if let Some(ref bar) = inner.mid_border_bar {
+                    bar.finish_and_clear();
+                }
+                for (_, bar) in inner.item_bars.drain() {
+                    bar.finish_and_clear();
+                }
+                inner.bottom_border_bar.finish_and_clear();
                 let _ = inner.multi.clear();
 
                 // Print the receipt.
@@ -908,7 +945,7 @@ impl ProgressSink for TuiSink {
                     inner.layout,
                     inner.colors,
                 );
-                eprint!("{receipt}");
+                eprintln!("{receipt}");
                 return;
             }
 
@@ -1111,22 +1148,22 @@ mod tests {
 
     #[test]
     fn total_col2_album_mode() {
-        let col2 = format_total_col2(&OperationKind::Album, None, Some(14), 42);
+        let col2 = format_total_col2(&OperationKind::Album, 0, None, 9, Some(14), 42);
         assert_eq!(visual_width(&col2), 42);
-        assert!(col2.starts_with("14 Tracks"));
+        assert!(col2.starts_with("[9 of 14] Tracks"));
     }
 
     #[test]
     fn total_col2_artist_mode() {
-        let col2 = format_total_col2(&OperationKind::Artist, Some(2), Some(24), 42);
+        let col2 = format_total_col2(&OperationKind::Artist, 1, Some(2), 22, Some(24), 42);
         assert_eq!(visual_width(&col2), 42);
-        assert!(col2.starts_with("2 Albums // 24 Tracks"));
+        assert!(col2.starts_with("[1 of 2] Albums // [22 of 24] Tracks"));
     }
 
     #[test]
     fn total_col2_unknown_counts() {
-        let col2 = format_total_col2(&OperationKind::Album, None, None, 42);
+        let col2 = format_total_col2(&OperationKind::Album, 0, None, 0, None, 42);
         assert_eq!(visual_width(&col2), 42);
-        assert!(col2.starts_with("? Tracks"));
+        assert!(col2.starts_with("[0 of ?] Tracks"));
     }
 }
