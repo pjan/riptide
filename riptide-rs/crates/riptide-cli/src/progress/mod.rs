@@ -10,8 +10,11 @@ pub mod options;
 pub mod plain_sink;
 pub mod symbols;
 pub mod transfer;
+pub mod tui_sink;
 
 pub use indicatif_sink::IndicatifSink;
 pub use options::{ColorMode, CompletionDetail, ProgressDetail, SymbolsMode};
 pub use plain_sink::PlainSink;
 pub use transfer::MediaTransferProgress;
+#[allow(unused_imports)]
+pub use tui_sink::TuiSink;
