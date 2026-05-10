@@ -186,8 +186,6 @@ pub enum CountUnit {
     Files,
     /// Audio tracks.
     Tracks,
-    /// Videos.
-    Videos,
     /// Mixed items.
     Items,
     /// Albums.
@@ -472,7 +470,6 @@ fn format_operation_label(label: &DisplayLabel) -> String {
 
 const fn operation_count_unit(kind: &OperationKind) -> CountUnit {
     match kind {
-        OperationKind::Video => CountUnit::Videos,
         OperationKind::Track
         | OperationKind::Album
         | OperationKind::Playlist

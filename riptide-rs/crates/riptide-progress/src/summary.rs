@@ -24,7 +24,7 @@ pub struct ProgressSummary {
     pub enriched: u64,
     /// Items skipped because they already existed or were explicitly skipped.
     pub skipped_existing: u64,
-    /// Items (tracks, videos, local files) that failed.
+    /// Items (tracks, local files) that failed.
     pub failed: u64,
     /// Artifact writes (cover, lyrics, playlist) that failed. Kept separate so
     /// the CLI can report "3 tracks failed, 1 cover failed" without ambiguity.

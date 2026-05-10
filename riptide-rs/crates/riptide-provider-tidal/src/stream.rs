@@ -4,7 +4,7 @@ use crate::{model, TidalError, TidalResult};
 use base64::{engine::general_purpose::STANDARD, Engine};
 use riptide_core::{
     AudioQuality, AudioQualityRequest, Codec, ContainerKind, Manifest, MediaRef, PostProcessStep,
-    ProviderQualityLabel, ResolvedQuality, StreamVariant, VideoQuality, VideoQualityRequest,
+    ProviderQualityLabel, ResolvedQuality, StreamVariant,
 };
 use url::Url;
 
@@ -15,15 +15,6 @@ pub const fn audio_quality_request_label(request: AudioQualityRequest) -> &'stat
         AudioQualityRequest::High => "HIGH",
         AudioQualityRequest::Lossless => "LOSSLESS",
         AudioQualityRequest::HiResLossless | AudioQualityRequest::Best => "HI_RES_LOSSLESS",
-    }
-}
-
-/// TIDAL API label for a video quality request.
-pub const fn video_quality_request_label(request: VideoQualityRequest) -> &'static str {
-    match request {
-        VideoQualityRequest::Low => "LOW",
-        VideoQualityRequest::Medium => "MEDIUM",
-        VideoQualityRequest::High | VideoQualityRequest::Best => "HIGH",
     }
 }
 
@@ -56,64 +47,6 @@ pub fn decode_track_manifest(
         sample_rate: None,
         manifest,
         post_process,
-    })
-}
-
-/// Decodes a TIDAL video stream response.
-pub fn decode_video_manifest(
-    response: &model::TidalVideoStreamResponse,
-    source: &MediaRef,
-) -> TidalResult<StreamVariant> {
-    let decoded = decode_manifest_text(&response.manifest)?;
-    let manifest = match response.manifest_mime_type {
-        model::TidalManifestMime::Bts | model::TidalManifestMime::Emu => {
-            let bts: model::BtsManifest =
-                serde_json::from_str(&decoded).map_err(|error| TidalError::InvalidResponse {
-                    field: "video_stream.manifest".to_owned(),
-                    message: error.to_string(),
-                })?;
-            bts.urls.into_iter().next().map_or_else(
-                || {
-                    Err(TidalError::InvalidResponse {
-                        field: "video_stream.urls".to_owned(),
-                        message: "expected at least one HLS URL".to_owned(),
-                    })
-                },
-                |url| Ok(Manifest::HlsMasterPlaylistUrl(url)),
-            )?
-        }
-        model::TidalManifestMime::Hls => {
-            Manifest::HlsMasterPlaylistUrl(Url::parse(decoded.trim()).map_err(|error| {
-                TidalError::InvalidResponse {
-                    field: "video_stream.manifest".to_owned(),
-                    message: error.to_string(),
-                }
-            })?)
-        }
-        model::TidalManifestMime::Dash => Manifest::DashXml(decoded),
-        model::TidalManifestMime::Other => {
-            return Err(TidalError::InvalidResponse {
-                field: "video_stream.manifestMimeType".to_owned(),
-                message: "unsupported manifest MIME type".to_owned(),
-            });
-        }
-    };
-
-    Ok(StreamVariant {
-        source: source.clone(),
-        quality: ResolvedQuality::Video(VideoQuality::ProviderSpecific(
-            ProviderQualityLabel::new(response.video_quality.as_deref().unwrap_or("HIGH"))
-                .map_err(|error| TidalError::InvalidResponse {
-                    field: "video_stream.videoQuality".to_owned(),
-                    message: error.to_string(),
-                })?,
-        )),
-        container: ContainerKind::TransportStream,
-        codec: None,
-        bit_depth: None,
-        sample_rate: None,
-        manifest,
-        post_process: vec![PostProcessStep::RemuxToMp4, PostProcessStep::RemoveSource],
     })
 }
 

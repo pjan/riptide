@@ -38,45 +38,12 @@ impl FromStr for AudioQualityRequest {
     }
 }
 
-/// Video quality requested by a caller.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum VideoQualityRequest {
-    /// Low quality.
-    Low,
-    /// Medium quality.
-    Medium,
-    /// High quality.
-    High,
-    /// Best available quality.
-    Best,
-}
-
-impl FromStr for VideoQualityRequest {
-    type Err = QualityParseError;
-
-    fn from_str(value: &str) -> Result<Self, Self::Err> {
-        match value {
-            "low" => Ok(Self::Low),
-            "medium" => Ok(Self::Medium),
-            "high" => Ok(Self::High),
-            "best" => Ok(Self::Best),
-            _ => Err(QualityParseError {
-                value: value.to_owned(),
-                expected: "low, medium, high, best",
-            }),
-        }
-    }
-}
-
-/// Quality request for an audio or video stream.
+/// Quality request for a stream.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", content = "quality", rename_all = "snake_case")]
 pub enum QualityRequest {
     /// Audio quality request.
     Audio(AudioQualityRequest),
-    /// Video quality request.
-    Video(VideoQualityRequest),
     /// Best available stream regardless of media type.
     BestAvailable,
 }
@@ -97,28 +64,12 @@ pub enum AudioQuality {
     ProviderSpecific(ProviderQualityLabel),
 }
 
-/// Video quality resolved by a provider.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum VideoQuality {
-    /// Low quality.
-    Low,
-    /// Medium quality.
-    Medium,
-    /// High quality.
-    High,
-    /// Provider-specific quality.
-    ProviderSpecific(ProviderQualityLabel),
-}
-
 /// Quality actually returned by a provider.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ResolvedQuality {
     /// Audio quality.
     Audio(AudioQuality),
-    /// Video quality.
-    Video(VideoQuality),
     /// Provider-specific quality label.
     ProviderSpecific {
         /// Provider that produced the label.
@@ -170,16 +121,6 @@ mod tests {
             AudioQualityRequest::HiResLossless
         );
         assert!("hires_lossless".parse::<AudioQualityRequest>().is_err());
-        Ok(())
-    }
-
-    #[test]
-    fn video_quality_request_uses_documented_strings() -> Result<(), Box<dyn std::error::Error>> {
-        assert_eq!(
-            "high".parse::<VideoQualityRequest>()?,
-            VideoQualityRequest::High
-        );
-        assert!("fhd".parse::<VideoQualityRequest>().is_err());
         Ok(())
     }
 

@@ -8,7 +8,7 @@ use crate::{
 use reqwest::{StatusCode, Url};
 use riptide_core::{
     Album, Artist, AudioQualityRequest, CatalogEntity, MediaRef, Playlist, ResourceId,
-    ResourceKind, StreamVariant, Track, Video, VideoQualityRequest,
+    ResourceKind, StreamVariant, Track, Video,
 };
 use serde::de::DeserializeOwned;
 use std::time::Duration;
@@ -151,27 +151,6 @@ impl TidalClient {
             )
             .await?;
         stream::decode_track_manifest(&raw, reference, quality)
-    }
-
-    /// Fetches a video stream variant.
-    pub async fn video_stream(
-        &self,
-        reference: &MediaRef,
-        quality: VideoQualityRequest,
-    ) -> TidalResult<StreamVariant> {
-        let params = [
-            ("videoquality", stream::video_quality_request_label(quality)),
-            ("playbackmode", "STREAM"),
-            ("assetpresentation", "FULL"),
-        ];
-        let raw: model::TidalVideoStreamResponse = self
-            .get_json(
-                &format!("videos/{}/playbackinfopostpaywall", reference.id.as_str()),
-                &params,
-                ApiCachePolicy::NoCache,
-            )
-            .await?;
-        stream::decode_video_manifest(&raw, reference)
     }
 
     /// Fetches ordered children for album and playlist resources.
@@ -598,7 +577,6 @@ mod tests {
             artists: Vec::<ArtistCredit>::new(),
             release_date: None,
             track_count: None,
-            video_count: None,
             explicit: None,
             release_type: None,
             hires_lossless: false,

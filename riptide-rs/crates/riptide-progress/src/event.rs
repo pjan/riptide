@@ -13,8 +13,6 @@ use std::path::PathBuf;
 pub enum OperationKind {
     /// Single track.
     Track,
-    /// Single video.
-    Video,
     /// Album.
     Album,
     /// Playlist.
@@ -41,8 +39,6 @@ pub enum OperationKind {
 pub enum ItemKind {
     /// Audio track.
     Track,
-    /// Video.
-    Video,
     /// Local file.
     LocalFile,
 }
@@ -86,7 +82,7 @@ pub enum DownloadPhase {
     Copying,
     /// Running post-processing (remux, extract).
     PostProcessing,
-    /// Writing audio/video tags.
+    /// Writing audio tags.
     Tagging,
     /// Moving the processed file to its final path.
     Persisting,
@@ -137,8 +133,6 @@ pub enum QualitySymbol {
     Lossless,
     /// Hi-res lossless quality.
     HiRes,
-    /// Video quality.
-    Video,
     /// Quality could not be determined.
     Unknown,
 }

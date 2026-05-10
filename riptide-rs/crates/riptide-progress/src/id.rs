@@ -11,7 +11,7 @@ pub struct OperationId(u64);
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub struct GroupId(u64);
 
-/// Unique identifier for a single download item (track, video, local file).
+/// Unique identifier for a single download item (track, local file).
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub struct ItemId(u64);
 

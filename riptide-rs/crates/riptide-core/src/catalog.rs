@@ -55,7 +55,7 @@ pub struct ArtistCredit {
     pub role: ArtistRole,
 }
 
-/// Lightweight album reference on tracks and videos.
+/// Lightweight album reference on tracks.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AlbumSummary {
     /// Provider-resolvable album reference.
@@ -144,8 +144,6 @@ pub struct Album {
     pub release_date: Option<time::Date>,
     /// Number of tracks.
     pub track_count: Option<ItemCount>,
-    /// Number of videos.
-    pub video_count: Option<ItemCount>,
     /// Explicit content flag.
     pub explicit: Option<bool>,
     /// Release type label.
@@ -276,7 +274,6 @@ mod tests {
             artists: Vec::new(),
             release_date: None,
             track_count: None,
-            video_count: None,
             explicit: None,
             release_type: Some("ALBUM".to_owned()),
             hires_lossless: true,

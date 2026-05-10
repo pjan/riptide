@@ -119,12 +119,6 @@ impl StreamProvider for TidalProvider {
                 .await
                 .map(|stream| vec![stream])
                 .map_err(TidalError::into_core),
-            (riptide_core::ResourceKind::Video, QualityRequest::Video(quality)) => self
-                .client
-                .video_stream(reference, quality)
-                .await
-                .map(|stream| vec![stream])
-                .map_err(TidalError::into_core),
             (_, _) => Err(CoreError::UnsupportedResourceKind {
                 provider: self.id.clone(),
                 kind: reference.kind,

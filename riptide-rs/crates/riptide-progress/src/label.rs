@@ -5,9 +5,7 @@
 //! They are pure functions with no I/O.
 
 use crate::event::{DisplayLabel, QualityBadge, QualitySymbol};
-use riptide_core::{
-    Album, AudioQuality, ResolvedQuality, StreamVariant, Track, TrackNumber, Video,
-};
+use riptide_core::{Album, AudioQuality, ResolvedQuality, StreamVariant, Track, TrackNumber};
 
 /// Builds a display label for a track.
 ///
@@ -19,16 +17,6 @@ pub fn label_for_track(track: &Track) -> DisplayLabel {
         artist: track.artists.first().map(|c| c.artist.name.clone()),
         group: track.album.as_ref().map(|a| a.title.clone()),
         track_number: track.track_number,
-    }
-}
-
-/// Builds a display label for a video.
-pub fn label_for_video(video: &Video) -> DisplayLabel {
-    DisplayLabel {
-        title: video.title.clone(),
-        artist: video.artists.first().map(|c| c.artist.name.clone()),
-        group: video.album.as_ref().map(|a| a.title.clone()),
-        track_number: video.track_number,
     }
 }
 
@@ -50,15 +38,6 @@ pub fn label_for_album(album: &Album) -> DisplayLabel {
 pub fn quality_badge_for_stream(stream: &StreamVariant) -> Option<QualityBadge> {
     let (symbol_kind, text, detail) = match &stream.quality {
         ResolvedQuality::Audio(audio) => audio_badge(stream, audio),
-        ResolvedQuality::Video(video) => {
-            let text = match video {
-                riptide_core::VideoQuality::Low => "360p".to_owned(),
-                riptide_core::VideoQuality::Medium => "720p".to_owned(),
-                riptide_core::VideoQuality::High => "1080p".to_owned(),
-                riptide_core::VideoQuality::ProviderSpecific(label) => label.as_str().to_owned(),
-            };
-            (QualitySymbol::Video, text, None)
-        }
         ResolvedQuality::ProviderSpecific { label, .. } => {
             (QualitySymbol::Lossless, label.as_str().to_owned(), None)
         }
@@ -203,7 +182,6 @@ mod tests {
             artists: vec![make_artist_credit("Dream Theater")],
             release_date: None,
             track_count: None,
-            video_count: None,
             explicit: None,
             release_type: None,
             hires_lossless: true,
@@ -257,15 +235,6 @@ mod tests {
         stream.sample_rate = Some(SampleRateHz::new(96_000)?);
         let badge = quality_badge_for_stream(&stream).ok_or("expected badge")?;
         assert_eq!(badge.detail.as_deref(), Some("24/96"));
-        Ok(())
-    }
-
-    #[test]
-    fn quality_badge_video() -> Result<(), Box<dyn std::error::Error>> {
-        let stream = make_stream(ResolvedQuality::Video(riptide_core::VideoQuality::High))?;
-        let badge = quality_badge_for_stream(&stream).ok_or("expected badge")?;
-        assert_eq!(badge.symbol_kind, QualitySymbol::Video);
-        assert_eq!(badge.text, "1080p");
         Ok(())
     }
 

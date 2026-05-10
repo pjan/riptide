@@ -9,7 +9,7 @@ use lofty::{
     tag::{Tag, TagType},
 };
 use riptide_core::{
-    Album, ArtistRole, ContainerExtension, DiscNumber, ExternalIdKind, Track, TrackNumber, Video,
+    Album, ArtistRole, ContainerExtension, DiscNumber, ExternalIdKind, Track, TrackNumber,
 };
 use std::{io::Cursor, path::Path, sync::Arc};
 
@@ -69,30 +69,6 @@ pub fn metadata_from_track(track: &Track, album: Option<&Album>) -> FileMetadata
         copyright: track.copyright.clone(),
         isrc: track.external_ids.0.get(&ExternalIdKind::Isrc).cloned(),
         bpm: track.bpm,
-        lyrics: None,
-        cover_data: None,
-        comment: None,
-    }
-}
-
-/// Builds file metadata from a video.
-pub fn metadata_from_video(video: &Video) -> FileMetadata {
-    let artists = artist_names(&video.artists);
-    FileMetadata {
-        title: video.title.clone(),
-        artist: artists.first().cloned().unwrap_or_default(),
-        artists,
-        album_title: video.album.as_ref().map(|album| album.title.clone()),
-        album_artist: video
-            .album
-            .as_ref()
-            .and_then(|album| artist_names(&album.artists).first().cloned()),
-        track_number: video.track_number,
-        disc_number: video.disc_number,
-        date: None,
-        copyright: None,
-        isrc: None,
-        bpm: None,
         lyrics: None,
         cover_data: None,
         comment: None,

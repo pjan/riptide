@@ -105,10 +105,7 @@ pub use provider::{
     CollectionProvider, LyricsProvider, Provider, ProviderCapabilities, ProviderRegistry, Resolver,
     StreamProvider,
 };
-pub use quality::{
-    AudioQuality, AudioQualityRequest, QualityRequest, ResolvedQuality, VideoQuality,
-    VideoQualityRequest,
-};
+pub use quality::{AudioQuality, AudioQualityRequest, QualityRequest, ResolvedQuality};
 pub use stream::{
     ContainerExtension, ContainerKind, Lyrics, LyricsSource, LyricsSourceName, Manifest,
     PostProcessStep, StreamVariant,

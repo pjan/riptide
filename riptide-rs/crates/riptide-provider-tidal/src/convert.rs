@@ -11,7 +11,6 @@ use riptide_core::{
     Album, AlbumSummary, Artist, ArtistCredit, ArtistRole, AudioQuality, CatalogEntity, CoverArtId,
     ExternalIdKind, ExternalIds, ItemCount, Lyrics, LyricsSource, LyricsSourceName, MediaDuration,
     MediaRef, Playlist, ProviderQualityLabel, ResourceId, ResourceKind, Track, TrackNumber, Video,
-    VideoQuality,
 };
 use std::collections::BTreeMap;
 
@@ -115,7 +114,6 @@ pub fn album(album: TidalAlbum) -> TidalResult<Album> {
         artists: artists(album.artist, album.artists)?,
         release_date: album.release_date.as_deref().map(parse_date).transpose()?,
         track_count: album.number_of_tracks.map(ItemCount::new),
-        video_count: album.number_of_videos.map(ItemCount::new),
         explicit: album.explicit,
         release_type: album.release_type,
         hires_lossless: album
@@ -200,24 +198,6 @@ pub fn audio_quality(label: &str) -> TidalResult<AudioQuality> {
             AudioQuality::ProviderSpecific(ProviderQualityLabel::new(other).map_err(|error| {
                 TidalError::InvalidResponse {
                     field: "quality".to_owned(),
-                    message: error.to_string(),
-                }
-            })?)
-        }
-    })
-}
-
-/// Maps a video quality label.
-#[allow(dead_code)]
-pub fn video_quality(label: &str) -> TidalResult<VideoQuality> {
-    Ok(match label {
-        "LOW" => VideoQuality::Low,
-        "MEDIUM" => VideoQuality::Medium,
-        "HIGH" => VideoQuality::High,
-        other => {
-            VideoQuality::ProviderSpecific(ProviderQualityLabel::new(other).map_err(|error| {
-                TidalError::InvalidResponse {
-                    field: "videoQuality".to_owned(),
                     message: error.to_string(),
                 }
             })?)
@@ -505,21 +485,7 @@ mod tests {
         assert!(result.hires_lossless);
         assert_eq!(result.release_type.as_deref(), Some("ALBUM"));
         assert_eq!(result.track_count.map(ItemCount::get), Some(12));
-        assert_eq!(result.video_count.map(ItemCount::get), Some(2));
         assert!(result.release_date.is_some());
-        Ok(())
-    }
-
-    #[test]
-    fn album_converts_zero_video_count() -> TidalResult<()> {
-        let result = album(TidalAlbum {
-            number_of_tracks: Some(1),
-            number_of_videos: Some(0),
-            ..minimal_album()
-        })?;
-
-        assert_eq!(result.track_count.map(ItemCount::get), Some(1));
-        assert_eq!(result.video_count.map(ItemCount::get), Some(0));
         Ok(())
     }
 
@@ -583,18 +549,6 @@ mod tests {
         assert!(matches!(
             audio_quality("UNKNOWN")?,
             AudioQuality::ProviderSpecific(_)
-        ));
-        Ok(())
-    }
-
-    #[test]
-    fn video_quality_maps_known_labels() -> TidalResult<()> {
-        assert_eq!(video_quality("LOW")?, VideoQuality::Low);
-        assert_eq!(video_quality("MEDIUM")?, VideoQuality::Medium);
-        assert_eq!(video_quality("HIGH")?, VideoQuality::High);
-        assert!(matches!(
-            video_quality("4K")?,
-            VideoQuality::ProviderSpecific(_)
         ));
         Ok(())
     }

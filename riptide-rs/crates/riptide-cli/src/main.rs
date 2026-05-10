@@ -1113,7 +1113,6 @@ fn fill_download_queue(
 const fn media_ref_for_entity(entity: &CatalogEntity) -> Option<&MediaRef> {
     match entity {
         CatalogEntity::Track(track) => Some(&track.id),
-        CatalogEntity::Video(video) => Some(&video.id),
         CatalogEntity::Album(album) => Some(&album.id),
         CatalogEntity::Playlist(playlist) => Some(&playlist.id),
         CatalogEntity::Artist(artist) => artist.id.as_ref(),
@@ -1177,15 +1176,6 @@ fn operation_kind_and_label(
 ) -> (OperationKind, DisplayLabel) {
     match entity {
         CatalogEntity::Track(t) => (OperationKind::Track, label_for_track(t)),
-        CatalogEntity::Video(v) => (
-            OperationKind::Track,
-            DisplayLabel {
-                title: v.title.clone(),
-                artist: None,
-                group: None,
-                track_number: None,
-            },
-        ),
         CatalogEntity::Album(a) => (OperationKind::Album, label_for_album(a)),
         CatalogEntity::Playlist(p) => (
             OperationKind::Playlist,
@@ -2074,7 +2064,6 @@ fn context_for_entity(entity: &CatalogEntity) -> TemplateContext {
     let now = time::OffsetDateTime::now_utc();
     match entity {
         CatalogEntity::Track(track) => TemplateContext::new(now).with_track(track),
-        CatalogEntity::Video(video) => TemplateContext::new(now).with_video(video),
         CatalogEntity::Album(album) => TemplateContext::new(now).with_album(album),
         CatalogEntity::Playlist(playlist) => {
             TemplateContext::new(now).with_playlist_input(riptide_template::PlaylistTemplateInput {
@@ -2179,7 +2168,7 @@ mod tests {
     use super::*;
     use riptide_core::{
         AlbumSummary, Artist, ArtistCredit, ArtistRole, ExternalIds, ProviderId, ResourceId,
-        ResourceKind, Video,
+        ResourceKind,
     };
 
     #[test]
@@ -2249,15 +2238,6 @@ mod tests {
     }
 
     #[test]
-    fn video_entities_are_not_download_items() -> Result<()> {
-        let entity = CatalogEntity::Video(sample_video()?);
-        let options = test_download_options("{item.title}")?;
-
-        assert!(download_item_for_entity(&entity, &options).is_none());
-        Ok(())
-    }
-
-    #[test]
     fn template_prevalidation_uses_synthetic_context() -> Result<()> {
         let template = CompiledTemplate::parse(
             "{album.artists}/{album.date:%Y} - {album.title}/{item.number:02d} {item.title}",
@@ -2315,25 +2295,10 @@ mod tests {
             artists: vec![artist_credit("Artist")?],
             release_date: Some(time::Date::from_calendar_date(2023, time::Month::April, 1)?),
             track_count: None,
-            video_count: None,
             explicit: None,
             release_type: None,
             hires_lossless: false,
             cover: None,
-        })
-    }
-
-    fn sample_video() -> Result<Video> {
-        Ok(Video {
-            id: media_ref(ResourceKind::Video, "video-1")?,
-            title: "Video Title".to_owned(),
-            artists: vec![artist_credit("Artist")?],
-            album: None,
-            duration: None,
-            track_number: None,
-            disc_number: None,
-            explicit: None,
-            quality_label: None,
         })
     }
 

@@ -535,7 +535,6 @@ fn operation_kind_label(kind: &riptide_progress::OperationKind) -> &'static str 
     use riptide_progress::OperationKind;
     match kind {
         OperationKind::Track => "track",
-        OperationKind::Video => "video",
         OperationKind::Album => "album",
         OperationKind::Playlist => "playlist",
         OperationKind::Artist => "artist",
@@ -572,7 +571,7 @@ fn item_label(
 
 fn is_collection_operation(kind: &riptide_progress::OperationKind) -> bool {
     use riptide_progress::OperationKind;
-    !matches!(kind, OperationKind::Track | OperationKind::Video)
+    !matches!(kind, OperationKind::Track)
 }
 
 fn phase_label(phase: &DownloadPhase) -> &'static str {
@@ -677,7 +676,6 @@ impl QualityBadgeDisplay for riptide_progress::QualityBadge {
             QualitySymbol::High => "▪",
             QualitySymbol::Lossless => "◇",
             QualitySymbol::HiRes => "◆",
-            QualitySymbol::Video => "▣",
             QualitySymbol::Unknown | _ => "◇",
         }
     }

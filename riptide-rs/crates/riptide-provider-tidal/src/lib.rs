@@ -26,7 +26,7 @@ pub use cover::{cover_url, CoverArtSize};
 pub use error::{TidalError, TidalResult};
 pub use provider::TidalProvider;
 pub use resource::TidalResource;
-pub use stream::{audio_quality_request_label, video_quality_request_label};
+pub use stream::audio_quality_request_label;
 
 /// HTTP client type used by TIDAL API and auth clients.
 pub type HttpClient = reqwest::Client;

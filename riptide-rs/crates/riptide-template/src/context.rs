@@ -1,7 +1,7 @@
 //! Template render context builders.
 
 use crate::{ExtraFieldName, TemplateError, TemplateResult, TemplateValue};
-use riptide_core::{Album, ArtistCredit, ArtistRole, Playlist, ProviderQualityLabel, Track, Video};
+use riptide_core::{Album, ArtistCredit, ArtistRole, Playlist, ProviderQualityLabel, Track};
 use serde::{Deserialize, Deserializer};
 use std::{borrow::Cow, collections::BTreeMap};
 
@@ -52,12 +52,6 @@ impl TemplateContext {
     /// Adds track fields to the item namespace.
     pub fn with_track(mut self, track: &Track) -> Self {
         self.item = Some(ItemTemplateInput::from_track(track));
-        self
-    }
-
-    /// Adds video fields to the item namespace.
-    pub fn with_video(mut self, video: &Video) -> Self {
-        self.item = Some(ItemTemplateInput::from_video(video));
         self
     }
 
@@ -271,43 +265,6 @@ impl ItemTemplateInput {
                 .join(", "),
             explicit: track.explicit,
             dolby: track.dolby_atmos,
-        }
-    }
-
-    fn from_video(video: &Video) -> Self {
-        let mut main = artist_names_by_role(&video.artists, ArtistRole::Main);
-        let mut featured = artist_names_by_role(&video.artists, ArtistRole::Featured);
-        main.sort();
-        featured.sort();
-        let artist = video
-            .artists
-            .iter()
-            .find(|credit| credit.role == ArtistRole::Main)
-            .or_else(|| video.artists.first())
-            .map(|credit| credit.artist.name.clone())
-            .unwrap_or_default();
-        Self {
-            kind: "video".to_owned(),
-            id: video.id.id.as_str().to_owned(),
-            title: video.title.clone(),
-            number: video.track_number.map_or(0, |n| i64::from(n.get())),
-            volume: video.disc_number.map_or(0, |n| i64::from(n.get())),
-            version: String::new(),
-            copyright: String::new(),
-            bpm: 0,
-            isrc: String::new(),
-            quality: video.quality_label.clone().unwrap_or_default(),
-            artist,
-            artists: main.join(", "),
-            features: featured.join(", "),
-            artists_with_features: main
-                .iter()
-                .chain(featured.iter())
-                .cloned()
-                .collect::<Vec<_>>()
-                .join(", "),
-            explicit: video.explicit,
-            dolby: false,
         }
     }
 
