@@ -6,8 +6,7 @@ use anyhow::{Context, Result};
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use directories::{ProjectDirs, UserDirs};
 use progress::{
-    indicatif_sink::RenderOpts, ColorMode, CompletionDetail, IndicatifSink, MediaTransferProgress,
-    PlainSink, ProgressDetail, SymbolsMode,
+    tui_sink::TuiRenderOpts, ColorMode, MediaTransferProgress, TuiSink,
 };
 use riptide_config::{
     Concurrency, DownloadConfig, M3uConfig, MetadataConfig, SinglesMode, ValidatedConfig,
@@ -39,7 +38,6 @@ use riptide_template::{
 use std::{
     collections::{HashMap, HashSet},
     fs,
-    io::IsTerminal,
     path::{Path, PathBuf},
     sync::Arc,
 };
@@ -211,15 +209,6 @@ struct DownloadArgs {
     /// Progress display mode.
     #[arg(long, value_enum, default_value = "auto")]
     progress: ProgressMode,
-    /// Detail level shown on active rows.
-    #[arg(long, value_enum, default_value = "title")]
-    progress_detail: ProgressDetail,
-    /// Detail level of completion output lines.
-    #[arg(long, value_enum, default_value = "auto")]
-    completion_detail: CompletionDetail,
-    /// Symbol rendering mode.
-    #[arg(long, value_enum, default_value = "auto")]
-    symbols: SymbolsMode,
     /// ANSI colour mode.
     #[arg(long, value_enum, default_value = "auto")]
     color: ColorMode,
@@ -758,10 +747,9 @@ async fn run_download(options: &SharedOptions, args: DownloadArgs) -> Result<Dow
     let http = http_client()?;
     let cover_cache = Arc::new(tokio::sync::Mutex::new(CoverCacheState::default()));
     let alloc = ProgressIdAllocator::new();
-    let render_opts = RenderOpts {
-        progress_detail: args.progress_detail,
-        completion_detail: args.completion_detail,
-        symbols: args.symbols,
+    let render_opts = TuiRenderOpts {
+        output_root: effective.root.clone(),
+        show_failures: effective.skip_errors,
         color: args.color,
     };
     let mut m3u_entries: Vec<(usize, M3uEntry)> = Vec::new();
@@ -820,7 +808,7 @@ async fn run_download(options: &SharedOptions, args: DownloadArgs) -> Result<Dow
                 total_items: Some(total_items),
             };
             let sink: Arc<dyn ProgressSink> =
-                create_progress_sink(op_config, args.progress, render_opts);
+                create_progress_sink(op_config, args.progress, render_opts.clone());
 
             for group in &expansion_groups {
                 let group_id = alloc.next_group_id();
@@ -883,7 +871,7 @@ async fn run_download(options: &SharedOptions, args: DownloadArgs) -> Result<Dow
                 total_items: Some(expansion_items.len() as u64),
             };
             let sink: Arc<dyn ProgressSink> =
-                create_progress_sink(op_config, args.progress, render_opts);
+                create_progress_sink(op_config, args.progress, render_opts.clone());
 
             for (entity, parent_album) in expansion_items {
                 let item_id = alloc.next_item_id();
@@ -945,19 +933,10 @@ async fn run_download(options: &SharedOptions, args: DownloadArgs) -> Result<Dow
 
 fn create_progress_sink(
     config: OperationConfig,
-    mode: ProgressMode,
-    opts: RenderOpts,
+    _mode: ProgressMode,
+    opts: TuiRenderOpts,
 ) -> Arc<dyn ProgressSink> {
-    let interactive = match mode {
-        ProgressMode::Auto => std::io::stderr().is_terminal(),
-        ProgressMode::Always => true,
-        ProgressMode::Never => false,
-    };
-    if interactive {
-        Arc::new(IndicatifSink::new(config, opts))
-    } else {
-        Arc::new(PlainSink::new(config))
-    }
+    Arc::new(TuiSink::new(config, opts))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -2208,16 +2187,6 @@ mod tests {
 
         assert!(claim_cover_sidecar(&cache, path).await);
         assert!(!claim_cover_sidecar(&cache, path).await);
-    }
-
-    #[test]
-    fn progress_label_truncates_from_left() {
-        let label = "Dream Theater/1992 - Images and Words/05 Metropolis - Part I The Miracle and the Sleeper.m4a";
-        let truncated = progress::indicatif_sink::truncate_label(label);
-
-        assert!(truncated.starts_with('…'));
-        assert!(truncated.ends_with("Sleeper.m4a"));
-        assert_eq!(truncated.chars().count(), 72);
     }
 
     #[test]
