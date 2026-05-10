@@ -9,8 +9,7 @@
     clippy::match_same_arms,
     clippy::missing_const_for_fn,
     clippy::option_if_let_else,
-    clippy::literal_string_with_formatting_args,
-    dead_code
+    clippy::literal_string_with_formatting_args
 )]
 
 use indicatif::{MultiProgress, ProgressBar, ProgressDrawTarget, ProgressStyle};
@@ -75,12 +74,12 @@ impl LayoutMode {
 
 /// Best-effort terminal width detection.
 ///
-/// Checks the `COLUMNS` environment variable. Returns `None` if unavailable,
-/// falling back to `Wide` (100) in [`LayoutMode::detect`].
+/// Uses `console::Term` to query the actual terminal width, falling back to
+/// the `COLUMNS` environment variable. Returns `None` if unavailable.
 fn detect_terminal_width() -> Option<usize> {
-    std::env::var("COLUMNS")
-        .ok()
-        .and_then(|v| v.parse().ok())
+    let term = console::Term::stderr();
+    let (_, width) = term.size_checked()?;
+    Some(width as usize)
 }
 
 // ── Column constants ───────────────────────────────────────────────────────
@@ -215,9 +214,25 @@ fn format_target(
     }
 }
 
-/// Renders `Total` text for the overall/total row in col2.
-fn format_total_col2(max_width: usize) -> String {
-    truncate_pad("Total", max_width)
+/// Renders the item summary text for the overall/total row in col2.
+///
+/// Artist: `2 Albums // 24 Tracks`, Album/Playlist/Mix: `14 Tracks`.
+/// Unknown counts show `?`.
+fn format_total_col2(
+    op_kind: &OperationKind,
+    total_groups: Option<u64>,
+    total_items: Option<u64>,
+    max_width: usize,
+) -> String {
+    let items_str = total_items.map_or_else(|| "?".to_owned(), |n| n.to_string());
+    let text = match op_kind {
+        OperationKind::Artist => {
+            let groups_str = total_groups.map_or_else(|| "?".to_owned(), |n| n.to_string());
+            format!("{groups_str} Albums // {items_str} Tracks")
+        }
+        _ => format!("{items_str} Tracks"),
+    };
+    truncate_pad(&text, max_width)
 }
 
 /// Renders a horizontal border of `\u{2500}` characters.
@@ -283,10 +298,11 @@ fn format_receipt(
     output_root: &Path,
     show_failures: bool,
     layout: LayoutMode,
+    colors: Colors,
 ) -> String {
     let width = layout.total_width();
     let header = format_header(op_kind, label, false);
-    let border = format_border(width);
+    let border = colors.dim(&format_border(width));
 
     let elapsed_str = summary
         .elapsed
@@ -304,9 +320,9 @@ fn format_receipt(
     });
 
     let error_line = if summary.failed > 0 {
-        format!(" \u{26A0} {} error(s)", summary.failed)
+        colors.red(&format!(" \u{26A0} {} errors / skipped", summary.failed))
     } else {
-        " \u{26A0} No errors / skipped".to_owned()
+        colors.green(" \u{26A0} No errors / skipped")
     };
 
     let display_path = output_root.display();
@@ -321,11 +337,10 @@ fn format_receipt(
     let _ = writeln!(buf, "{border}");
     let _ = write!(buf, " \u{21B3} Saved to: {display_path}");
 
-    if show_failures && summary.failed > 0 {
+    if show_failures && summary.failed > 0 && !summary.failed_labels.is_empty() {
         let _ = writeln!(buf);
-        for label_text in &summary.failed_labels {
-            let _ = writeln!(buf, "   \u{2022} {label_text}");
-        }
+        let joined = summary.failed_labels.join(", ");
+        let _ = write!(buf, "{}", colors.red(&format!(" \u{26A0} Failed: {joined}")));
     }
 
     buf
@@ -562,13 +577,16 @@ fn assemble_item_row(
 
 /// Assembles the total/overall row string.
 fn assemble_total_row(
+    op_kind: &OperationKind,
+    total_groups: Option<u64>,
     items_done: u64,
     items_total: Option<u64>,
+    aggregate_rate: f64,
     layout: LayoutMode,
     colors: Colors,
 ) -> String {
     let col1 = format!("{:<COL1_WIDTH$}", "Total");
-    let col2 = format_total_col2(layout.col2_width());
+    let col2 = format_total_col2(op_kind, total_groups, items_total, layout.col2_width());
 
     let pct = match items_total {
         Some(total) if total > 0 => (items_done as f64 / total as f64) * 100.0,
@@ -578,7 +596,8 @@ fn assemble_total_row(
     let col3_coloured = colors.colour_progress(&col3);
 
     let col4 = if layout.has_speed() {
-        Some(format!("{:>COL4_WIDTH$}", ""))
+        let raw = format_speed(aggregate_rate);
+        Some(colors.colour_speed(&raw))
     } else {
         None
     };
@@ -612,9 +631,15 @@ struct TuiInner {
     state: ProgressState,
     layout: LayoutMode,
     multi: MultiProgress,
+    #[allow(dead_code)]
     header_bar: ProgressBar,
+    #[allow(dead_code)]
+    top_border_bar: ProgressBar,
     overall_bar: Option<ProgressBar>,
+    #[allow(dead_code)]
+    mid_border_bar: Option<ProgressBar>,
     item_bars: HashMap<ItemId, ProgressBar>,
+    bottom_border_bar: ProgressBar,
     start: Instant,
     spinner_frame: usize,
     output_root: PathBuf,
@@ -638,18 +663,40 @@ impl TuiSink {
         let header_text = format_header(&config.kind, &config.label, true);
         header_bar.set_message(colors.bold(&header_text));
 
-        // Overall/total bar: shown for multi-item operations (not Track).
-        let overall_bar = if matches!(config.kind, OperationKind::Track) {
-            None
+        let border_text = colors.dim(&format_border(layout.total_width()));
+        let text_style = ProgressStyle::with_template("{msg}")
+            .unwrap_or_else(|_| ProgressStyle::default_bar());
+
+        // Top border: between header and total/items.
+        let top_border_bar = multi.add(ProgressBar::new(0));
+        top_border_bar.set_style(text_style.clone());
+        top_border_bar.set_message(border_text.clone());
+
+        // Overall/total bar + mid border: shown for multi-item operations (not Track).
+        let (overall_bar, mid_border_bar) = if matches!(config.kind, OperationKind::Track) {
+            (None, None)
         } else {
             let bar = multi.add(ProgressBar::new(config.total_items.unwrap_or(0)));
-            bar.set_style(
-                ProgressStyle::with_template("{msg}")
-                    .unwrap_or_else(|_| ProgressStyle::default_bar()),
-            );
-            bar.set_message(assemble_total_row(0, config.total_items, layout, colors));
-            Some(bar)
+            bar.set_style(text_style.clone());
+            bar.set_message(assemble_total_row(
+                &config.kind,
+                config.total_groups,
+                0,
+                config.total_items,
+                0.0,
+                layout,
+                colors,
+            ));
+            let mid = multi.add(ProgressBar::new(0));
+            mid.set_style(text_style.clone());
+            mid.set_message(border_text.clone());
+            (Some(bar), Some(mid))
         };
+
+        // Bottom border: below items. Starts visible, items insert above it.
+        let bottom_border_bar = multi.add(ProgressBar::new(0));
+        bottom_border_bar.set_style(text_style);
+        bottom_border_bar.set_message(border_text);
 
         Self {
             inner: Mutex::new(TuiInner {
@@ -657,8 +704,11 @@ impl TuiSink {
                 layout,
                 multi,
                 header_bar,
+                top_border_bar,
                 overall_bar,
+                mid_border_bar,
                 item_bars: HashMap::new(),
+                bottom_border_bar,
                 start: Instant::now(),
                 spinner_frame: 0,
                 output_root: opts.output_root,
@@ -742,8 +792,16 @@ impl TuiInner {
                 })
                 .count() as u64;
             let total = self.state.operation.total_items;
-            let msg =
-                assemble_total_row(done, total, self.layout, self.colors);
+            let rate = self.state.aggregate_rate();
+            let msg = assemble_total_row(
+                &self.state.operation.kind,
+                self.state.operation.total_groups,
+                done,
+                total,
+                rate,
+                self.layout,
+                self.colors,
+            );
             bar.set_message(msg);
         }
     }
@@ -775,8 +833,10 @@ impl ProgressSink for TuiSink {
                 let _ = inner.state.reduce(event);
 
                 if !is_queued && !inner.item_bars.contains_key(&item_id) {
-                    // Create bar for newly-active item.
-                    let bar = inner.multi.add(ProgressBar::new(0));
+                    // Create bar for newly-active item, inserted before the bottom border.
+                    let bar = inner
+                        .multi
+                        .insert_before(&inner.bottom_border_bar, ProgressBar::new(0));
                     bar.set_style(
                         ProgressStyle::with_template("{msg}")
                             .unwrap_or_else(|_| ProgressStyle::default_bar()),
@@ -846,6 +906,7 @@ impl ProgressSink for TuiSink {
                     &inner.output_root,
                     inner.show_failures,
                     inner.layout,
+                    inner.colors,
                 );
                 eprint!("{receipt}");
                 return;
@@ -1049,9 +1110,23 @@ mod tests {
     }
 
     #[test]
-    fn total_col2_padded() {
-        let col2 = format_total_col2(42);
+    fn total_col2_album_mode() {
+        let col2 = format_total_col2(&OperationKind::Album, None, Some(14), 42);
         assert_eq!(visual_width(&col2), 42);
-        assert!(col2.starts_with("Total"));
+        assert!(col2.starts_with("14 Tracks"));
+    }
+
+    #[test]
+    fn total_col2_artist_mode() {
+        let col2 = format_total_col2(&OperationKind::Artist, Some(2), Some(24), 42);
+        assert_eq!(visual_width(&col2), 42);
+        assert!(col2.starts_with("2 Albums // 24 Tracks"));
+    }
+
+    #[test]
+    fn total_col2_unknown_counts() {
+        let col2 = format_total_col2(&OperationKind::Album, None, None, 42);
+        assert_eq!(visual_width(&col2), 42);
+        assert!(col2.starts_with("? Tracks"));
     }
 }

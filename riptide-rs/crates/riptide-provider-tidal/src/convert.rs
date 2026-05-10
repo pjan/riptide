@@ -334,22 +334,6 @@ mod tests {
         }
     }
 
-    fn minimal_album() -> TidalAlbum {
-        TidalAlbum {
-            id: 1,
-            title: "Test Album".to_owned(),
-            release_date: Some("2024-01-15".to_owned()),
-            number_of_tracks: Some(12),
-            number_of_videos: Some(0),
-            explicit: Some(false),
-            cover: Some("abcdef12-3456-7890-abcd-ef1234567890".to_owned()),
-            release_type: Some("ALBUM".to_owned()),
-            artist: None,
-            artists: Vec::new(),
-            media_metadata: MediaMetadata::default(),
-        }
-    }
-
     #[test]
     fn track_converts_all_fields() -> TidalResult<()> {
         let result = track(minimal_track())?;
