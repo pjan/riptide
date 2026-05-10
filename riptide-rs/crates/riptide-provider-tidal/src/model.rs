@@ -205,8 +205,9 @@ pub struct TidalAlbum {
     /// Track count.
     #[serde(default, rename = "numberOfTracks")]
     pub number_of_tracks: Option<u32>,
-    /// Video count.
+    /// Video count (present in TIDAL responses, unused by riptide).
     #[serde(default, rename = "numberOfVideos")]
+    #[allow(dead_code)]
     pub number_of_videos: Option<u32>,
     /// Explicit flag.
     #[serde(default)]
@@ -238,8 +239,9 @@ pub struct TidalPlaylist {
     /// Track count.
     #[serde(default, rename = "numberOfTracks")]
     pub number_of_tracks: Option<u32>,
-    /// Video count.
+    /// Video count (present in TIDAL responses, unused by riptide).
     #[serde(default, rename = "numberOfVideos")]
+    #[allow(dead_code)]
     pub number_of_videos: Option<u32>,
     /// Creation timestamp string.
     #[serde(default)]
@@ -333,19 +335,6 @@ pub struct TidalStreamResponse {
     /// Audio quality label.
     #[serde(default)]
     pub audio_quality: Option<String>,
-}
-
-/// TIDAL raw video stream API response.
-#[derive(Debug, Clone, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct TidalVideoStreamResponse {
-    /// Base64-encoded manifest payload.
-    pub manifest: String,
-    /// Manifest MIME type.
-    pub manifest_mime_type: TidalManifestMime,
-    /// Video quality label.
-    #[serde(default)]
-    pub video_quality: Option<String>,
 }
 
 /// TIDAL BTS manifest.

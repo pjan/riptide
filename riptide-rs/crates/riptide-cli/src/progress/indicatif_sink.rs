@@ -628,7 +628,7 @@ fn sym(set: SymbolSet, symbol: RowSymbol) -> String {
 
 /// Truncates a label to `MAX_CHARS` characters, preserving the tail.
 #[cfg(test)]
-pub(crate) fn truncate_label(label: &str) -> String {
+pub fn truncate_label(label: &str) -> String {
     const MAX_CHARS: usize = 72;
     if label.chars().count() <= MAX_CHARS {
         return label.to_owned();

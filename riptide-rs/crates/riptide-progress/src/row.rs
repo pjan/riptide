@@ -538,7 +538,7 @@ mod tests {
     }
 
     #[test]
-    fn item_label_without_number() -> Result<(), Box<dyn std::error::Error>> {
+    fn item_label_without_number() {
         let label = DisplayLabel {
             title: "Untitled".to_owned(),
             artist: None,
@@ -546,7 +546,6 @@ mod tests {
             track_number: None,
         };
         assert_eq!(format_item_label(&label, false), "Untitled");
-        Ok(())
     }
 
     #[test]

@@ -337,7 +337,7 @@ struct ExpansionResult {
 
 impl ExpansionResult {
     #[allow(dead_code)]
-    fn is_grouped(&self) -> bool {
+    const fn is_grouped(&self) -> bool {
         !self.groups.is_empty()
     }
 
@@ -364,7 +364,7 @@ impl std::fmt::Debug for ExpandedGroup {
         f.debug_struct("ExpandedGroup")
             .field("album", &self.album.title)
             .field("items_count", &self.items.len())
-            .finish()
+            .finish_non_exhaustive()
     }
 }
 
@@ -806,6 +806,7 @@ async fn run_download(options: &SharedOptions, args: DownloadArgs) -> Result<Dow
         let mut scheduled = Vec::new();
         let mut group_tracker = GroupCompletionTracker::new();
 
+        #[allow(clippy::if_not_else)]
         if !expansion_groups.is_empty() {
             // ── Grouped path (artist) ───────────────────────────────────
             let total_groups = Some(expansion_groups.len() as u64);
@@ -959,6 +960,7 @@ fn create_progress_sink(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn run_scheduled_downloads(
     scheduled: Vec<ScheduledDownload>,
     provider: &TidalProvider,
