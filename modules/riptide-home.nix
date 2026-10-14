@@ -321,7 +321,7 @@ in
     };
 
     # macOS: launchd service
-    launchd.agents.riptide-listener = mkIf (cfg.service.enable && pkgs.stdenv.isDarwin) {
+    launchd.agents.riptide-listener = mkIf (cfg.service.enable && pkgs.stdenv.hostPlatform.isDarwin) {
       enable = true;
       config = {
         ProgramArguments = [ "${cfg.package}/bin/riptide" "listen" ];
