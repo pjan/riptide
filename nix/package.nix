@@ -30,7 +30,10 @@ python3.pkgs.buildPythonApplication rec {
 
   # Ensure ffmpeg is available at runtime
   makeWrapperArgs = [
-    "--prefix PATH : ${lib.makeBinPath [ ffmpeg ]}"
+    "--prefix"
+    "PATH"
+    ":"
+    (lib.makeBinPath [ ffmpeg ])
   ];
 
   # Tests require network access and Tidal credentials
