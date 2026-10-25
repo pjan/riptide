@@ -1,0 +1,15 @@
+[package]
+name = "riptide-config"
+edition.workspace = true
+license.workspace = true
+version.workspace = true
+
+[dependencies]
+riptide-core = { path = "../riptide-core" }
+riptide-template = { path = "../riptide-template" }
+serde.workspace = true
+thiserror.workspace = true
+toml.workspace = true
+
+[lints]
+workspace = true

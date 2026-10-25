@@ -1,0 +1,28 @@
+[package]
+name = "riptide-rs"
+edition.workspace = true
+license.workspace = true
+version.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+clap.workspace = true
+console = "0.15"
+directories.workspace = true
+indicatif.workspace = true
+riptide-config = { path = "../riptide-config" }
+riptide-core = { path = "../riptide-core" }
+riptide-media = { path = "../riptide-media" }
+riptide-progress = { path = "../riptide-progress" }
+riptide-metadata = { path = "../riptide-metadata" }
+riptide-provider-tidal = { path = "../riptide-provider-tidal" }
+riptide-template = { path = "../riptide-template" }
+tempfile.workspace = true
+tokio.workspace = true
+time.workspace = true
+url.workspace = true
+
+[dev-dependencies]
+
+[lints]
+workspace = true

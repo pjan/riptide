@@ -1,0 +1,19 @@
+[package]
+name = "riptide-media"
+edition.workspace = true
+license.workspace = true
+version.workspace = true
+
+[dependencies]
+dash-mpd.workspace = true
+futures-util.workspace = true
+m3u8-rs.workspace = true
+reqwest.workspace = true
+riptide-core = { path = "../riptide-core" }
+tempfile.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+url.workspace = true
+
+[lints]
+workspace = true
