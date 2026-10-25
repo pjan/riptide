@@ -12,8 +12,6 @@ allow = [
     "Zlib",
     "MPL-2.0",
 ]
-copyleft = "warn"
-
 [advisories]
 ignore = []
 
