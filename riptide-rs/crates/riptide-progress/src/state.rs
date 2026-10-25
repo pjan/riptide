@@ -361,8 +361,7 @@ impl ProgressState {
                         let delta_bytes = progress.bytes_done.saturating_sub(item.prev_bytes);
                         #[allow(clippy::cast_precision_loss)]
                         {
-                            item.current_rate_bytes_per_sec =
-                                delta_bytes as f64 / elapsed;
+                            item.current_rate_bytes_per_sec = delta_bytes as f64 / elapsed;
                         }
                         item.prev_bytes = progress.bytes_done;
                         item.prev_instant = Some(now);
@@ -438,8 +437,7 @@ impl ProgressState {
                     .items
                     .shift_remove(&item_id)
                     .ok_or(ProgressError::UnknownItem(item_id))?;
-                self.total_bytes_transferred +=
-                    item.transfer.as_ref().map_or(0, |t| t.bytes_done);
+                self.total_bytes_transferred += item.transfer.as_ref().map_or(0, |t| t.bytes_done);
                 // Increment parent group's done counter.
                 if let Some(gid) = item.group_id {
                     if let Some(group) = self.groups.get_mut(&gid) {
@@ -868,7 +866,10 @@ mod tests {
         let _ = state.reduce(DownloadEvent::OperationFinished { id: op_id });
 
         let summary = state.summary(None);
-        assert_eq!(summary.failed, 1, "item failure must not be double-counted by group partial");
+        assert_eq!(
+            summary.failed, 1,
+            "item failure must not be double-counted by group partial"
+        );
         assert_eq!(summary.groups_done, 1);
     }
 

@@ -14,8 +14,8 @@
 
 use indicatif::{MultiProgress, ProgressBar, ProgressDrawTarget, ProgressStyle};
 use riptide_progress::{
-    DownloadEvent, DownloadPhase, ItemId, OperationConfig, OperationKind,
-    ProgressSink, ProgressState, QualityBadge, QualitySymbol,
+    DownloadEvent, DownloadPhase, ItemId, OperationConfig, OperationKind, ProgressSink,
+    ProgressState, QualityBadge, QualitySymbol,
 };
 use std::{
     collections::HashMap,
@@ -92,23 +92,23 @@ const BAR_CHARS: usize = 20;
 
 // Braille spinner frames.
 const SPINNER_FRAMES: &[char] = &[
-    '\u{280B}', '\u{2819}', '\u{2839}', '\u{2838}', '\u{283C}', '\u{2834}', '\u{2826}',
-    '\u{2827}', '\u{2807}', '\u{280F}',
+    '\u{280B}', '\u{2819}', '\u{2839}', '\u{2838}', '\u{283C}', '\u{2834}', '\u{2826}', '\u{2827}',
+    '\u{2807}', '\u{280F}',
 ];
 
 // ── Entity icons ───────────────────────────────────────────────────────────
 
 fn entity_icon(kind: &OperationKind) -> &'static str {
     match kind {
-        OperationKind::Artist => "\u{2605}",           // ★
-        OperationKind::Album => "\u{25CE}",            // ◎
-        OperationKind::Track => "\u{266A}",            // ♪
-        OperationKind::Playlist => "\u{2630}",         // ☰
-        OperationKind::Mix => "\u{2637}",              // ☷
-        OperationKind::Collection => "\u{25CE}",       // ◎
-        OperationKind::LocalTransfer => "\u{25CE}",    // ◎
+        OperationKind::Artist => "\u{2605}",             // ★
+        OperationKind::Album => "\u{25CE}",              // ◎
+        OperationKind::Track => "\u{266A}",              // ♪
+        OperationKind::Playlist => "\u{2630}",           // ☰
+        OperationKind::Mix => "\u{2637}",                // ☷
+        OperationKind::Collection => "\u{25CE}",         // ◎
+        OperationKind::LocalTransfer => "\u{25CE}",      // ◎
         OperationKind::MetadataEnrichment => "\u{25CE}", // ◎
-        _ => "\u{25CE}",                               // ◎
+        _ => "\u{25CE}",                                 // ◎
     }
 }
 
@@ -230,8 +230,7 @@ fn format_total_col2(
     let items_total_str = total_items.map_or_else(|| "?".to_owned(), |n| n.to_string());
     let text = match op_kind {
         OperationKind::Artist => {
-            let groups_total_str =
-                total_groups.map_or_else(|| "?".to_owned(), |n| n.to_string());
+            let groups_total_str = total_groups.map_or_else(|| "?".to_owned(), |n| n.to_string());
             format!(
                 "[{groups_done} of {groups_total_str}] Albums // [{items_done} of {items_total_str}] Tracks"
             )
@@ -346,7 +345,11 @@ fn format_receipt(
     if show_failures && summary.failed > 0 && !summary.failed_labels.is_empty() {
         let _ = writeln!(buf);
         let joined = summary.failed_labels.join(", ");
-        let _ = write!(buf, "{}", colors.red(&format!(" \u{26A0} Failed: {joined}")));
+        let _ = write!(
+            buf,
+            "{}",
+            colors.red(&format!(" \u{26A0} Failed: {joined}"))
+        );
     }
 
     buf
@@ -431,10 +434,10 @@ impl Colors {
 
 fn quality_symbol_char(badge: &QualityBadge) -> &'static str {
     match badge.symbol_kind {
-        QualitySymbol::Low => "\u{2022}",    // •
-        QualitySymbol::High => "\u{25AA}",   // ▪
-        QualitySymbol::Lossless => "\u{25C7}", // ◇
-        QualitySymbol::HiRes => "\u{25C6}",  // ◆
+        QualitySymbol::Low => "\u{2022}",         // •
+        QualitySymbol::High => "\u{25AA}",        // ▪
+        QualitySymbol::Lossless => "\u{25C7}",    // ◇
+        QualitySymbol::HiRes => "\u{25C6}",       // ◆
         QualitySymbol::Unknown | _ => "\u{25C7}", // ◇
     }
 }
@@ -672,15 +675,14 @@ impl TuiSink {
         // Header bar (static text, no progress).
         let header_bar = multi.add(ProgressBar::new(0));
         header_bar.set_style(
-            ProgressStyle::with_template("{msg}")
-                .unwrap_or_else(|_| ProgressStyle::default_bar()),
+            ProgressStyle::with_template("{msg}").unwrap_or_else(|_| ProgressStyle::default_bar()),
         );
         let header_text = format_header(&config.kind, &config.label, true);
         header_bar.set_message(colors.bold(&header_text));
 
         let border_text = colors.dim(&format_border(layout.total_width()));
-        let text_style = ProgressStyle::with_template("{msg}")
-            .unwrap_or_else(|_| ProgressStyle::default_bar());
+        let text_style =
+            ProgressStyle::with_template("{msg}").unwrap_or_else(|_| ProgressStyle::default_bar());
 
         // Top border: between header and total/items.
         let top_border_bar = multi.add(ProgressBar::new(0));
@@ -803,17 +805,13 @@ impl TuiInner {
                 .state
                 .completed
                 .iter()
-                .filter(|r| {
-                    matches!(r, riptide_progress::CompletedRecord::Item { .. })
-                })
+                .filter(|r| matches!(r, riptide_progress::CompletedRecord::Item { .. }))
                 .count() as u64;
             let groups_done = self
                 .state
                 .completed
                 .iter()
-                .filter(|r| {
-                    matches!(r, riptide_progress::CompletedRecord::Group { .. })
-                })
+                .filter(|r| matches!(r, riptide_progress::CompletedRecord::Group { .. }))
                 .count() as u64;
             let rate = self.state.aggregate_rate();
             let msg = assemble_total_row(
@@ -890,7 +888,10 @@ impl ProgressSink for TuiSink {
                 return;
             }
 
-            DownloadEvent::ItemFinished { item_id, outcome: _ } => {
+            DownloadEvent::ItemFinished {
+                item_id,
+                outcome: _,
+            } => {
                 let item_id = *item_id;
                 if let Some(bar) = inner.item_bars.remove(&item_id) {
                     bar.finish_and_clear();
@@ -913,10 +914,8 @@ impl ProgressSink for TuiSink {
 
             DownloadEvent::OperationFinished { .. } => {
                 let elapsed_secs = inner.start.elapsed().as_secs();
-                let elapsed = time::Duration::new(
-                    i64::try_from(elapsed_secs).unwrap_or(i64::MAX),
-                    0,
-                );
+                let elapsed =
+                    time::Duration::new(i64::try_from(elapsed_secs).unwrap_or(i64::MAX), 0);
                 let _ = inner.state.reduce(event);
                 let summary = inner.state.summary(Some(elapsed));
 
@@ -955,8 +954,8 @@ impl ProgressSink for TuiSink {
             | DownloadEvent::GroupTotalsUpdated { .. } => {}
 
             // Artifacts: silent during download.
-            DownloadEvent::ArtifactPhaseChanged { .. }
-            | DownloadEvent::ArtifactFinished { .. } => {}
+            DownloadEvent::ArtifactPhaseChanged { .. } | DownloadEvent::ArtifactFinished { .. } => {
+            }
 
             // Output path: state only.
             DownloadEvent::ItemOutputResolved { .. } => {}

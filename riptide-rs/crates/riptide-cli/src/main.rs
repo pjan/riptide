@@ -5,9 +5,7 @@ mod progress;
 use anyhow::{Context, Result};
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use directories::{ProjectDirs, UserDirs};
-use progress::{
-    tui_sink::TuiRenderOpts, ColorMode, MediaTransferProgress, TuiSink,
-};
+use progress::{tui_sink::TuiRenderOpts, ColorMode, MediaTransferProgress, TuiSink};
 use riptide_config::{
     Concurrency, DownloadConfig, M3uConfig, MetadataConfig, SinglesMode, ValidatedConfig,
 };
@@ -798,8 +796,7 @@ async fn run_download(options: &SharedOptions, args: DownloadArgs) -> Result<Dow
         if !expansion_groups.is_empty() {
             // ── Grouped path (artist) ───────────────────────────────────
             let total_groups = Some(expansion_groups.len() as u64);
-            let total_items: u64 =
-                expansion_groups.iter().map(|g| g.items.len() as u64).sum();
+            let total_items: u64 = expansion_groups.iter().map(|g| g.items.len() as u64).sum();
             let op_config = OperationConfig {
                 id: op_id,
                 kind: op_kind,
