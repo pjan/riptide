@@ -45,29 +45,30 @@
           };
         });
 
-        devShells.default = eachSystem (system: nixpkgs.legacyPackages.${system}.mkShell {
-          buildInputs = with nixpkgs.legacyPackages.${system}; [
-            python313
-            ffmpeg
-          ] ++ (with pkgs.python313Packages; [
-            aiofiles
-            aiohttp
-            flask
-            m3u8
-            mutagen
-            pydantic
-            requests
-            requests-cache
-            typer
-            pytest
-            pytest-mock
-          ]);
+        devShells.default = eachSystem (system:
+          let pkgs = nixpkgs.legacyPackages.${system};
+          in pkgs.mkShell {
+            nativeBuildInputs = with pkgs; [
+              rustc
+              cargo
+              cargo-nextest
+              clippy
+              rustfmt
+              pkg-config
+              protobuf
+              cacert
+            ];
 
-          shellHook = ''
-            echo "riptide development environment"
-            echo " > Python: $(python --version)"
-            echo " > FFmpeg: $(ffmpeg -version | head -n1)"
-          '';
-        });
+            buildInputs = with pkgs; [
+              openssl
+              ffmpeg
+            ];
+
+            shellHook = ''
+              echo "riptide development environment"
+              echo " > Rust: $(rustc --version)"
+              echo " > FFmpeg: $(ffmpeg -version | head -n1)"
+            '';
+          });
       };
 }

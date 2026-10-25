@@ -1,52 +1,52 @@
-{ lib
-, python3
-, fetchFromGitHub
-, ffmpeg
+{
+  lib,
+  rustPlatform,
+  openssl,
+  pkg-config,
+  protobuf,
+  makeWrapper,
+  ffmpeg,
+  cacert,
 }:
 
-python3.pkgs.buildPythonApplication rec {
+rustPlatform.buildRustPackage {
   pname = "riptide";
-  version = "3.2.1";
-  pyproject = true;
+  version = "0.1.0";
 
-  src = ../.;
+  src = ../riptide-rs;
+  cargoLock.lockFile = ../riptide-rs/Cargo.lock;
 
-  build-system = with python3.pkgs; [
-    setuptools
-    wheel
+  nativeBuildInputs = [
+    pkg-config
+    protobuf
+    makeWrapper
   ];
 
-  dependencies = with python3.pkgs; [
-    aiofiles
-    aiohttp
-    flask
-    m3u8
-    mutagen
-    pydantic
-    requests
-    requests-cache
-    typer
-  ];
+  buildInputs = [ openssl ];
 
-  # Ensure ffmpeg is available at runtime
-  makeWrapperArgs = [
-    "--prefix"
-    "PATH"
-    ":"
-    (lib.makeBinPath [ ffmpeg ])
-  ];
+  cargoBuildFlags = [ "--workspace" ];
 
-  # Tests require network access and Tidal credentials
+  SSL_CERT_FILE = "${cacert}/etc/ssl/certs/ca-bundle.crt";
+  GIT_SSL_CAINFO = "${cacert}/etc/ssl/certs/ca-bundle.crt";
+  NIX_SSL_CERT_FILE = "${cacert}/etc/ssl/certs/ca-bundle.crt";
+  CURL_CA_BUNDLE = "${cacert}/etc/ssl/certs/ca-bundle.crt";
+  CARGO_HTTP_CAINFO = "${cacert}/etc/ssl/certs/ca-bundle.crt";
+
+  postInstall = ''
+    mv "$out/bin/riptide-rs" "$out/bin/riptide"
+    wrapProgram "$out/bin/riptide" \
+      --prefix PATH : "${lib.makeBinPath [ ffmpeg ]}" \
+      --set-default SSL_CERT_FILE "${cacert}/etc/ssl/certs/ca-bundle.crt" \
+      --set-default CURL_CA_BUNDLE "${cacert}/etc/ssl/certs/ca-bundle.crt"
+  '';
+
   doCheck = false;
 
-  pythonImportsCheck = [ "riptide" ];
-
-  meta = with lib; {
+  meta = {
     description = "CLI downloader for Tidal music";
     homepage = "https://github.com/pjan/riptide";
-    license = licenses.asl20;
-    maintainers = [ ];
+    license = lib.licenses.asl20;
     mainProgram = "riptide";
-    platforms = platforms.unix;
+    platforms = lib.platforms.unix;
   };
 }
