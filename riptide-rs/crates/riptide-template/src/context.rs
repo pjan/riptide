@@ -473,7 +473,7 @@ where
     let Some(value) = Option::<String>::deserialize(deserializer)? else {
         return Ok(None);
     };
-    let format = time::format_description::parse("[year]-[month]-[day]")
+    let format = time::format_description::parse_borrowed::<2>("[year]-[month]-[day]")
         .map_err(serde::de::Error::custom)?;
     time::Date::parse(&value, &format)
         .map(Some)
