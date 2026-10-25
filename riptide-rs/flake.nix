@@ -17,9 +17,13 @@
           rustToolchain
           pkgs.cargo-nextest
           pkgs.clippy
+          pkgs.pkg-config
           pkgs.protobuf
           pkgs.rustfmt
           pkgs.cacert
+        ];
+        commonBuildInputs = [
+          pkgs.openssl
         ];
         runtimeInputs = [
           pkgs.ffmpeg
@@ -37,6 +41,7 @@
           src = ./.;
           cargoLock.lockFile = ./Cargo.lock;
           nativeBuildInputs = commonNativeBuildInputs;
+          buildInputs = commonBuildInputs;
           inherit buildPhase;
           doCheck = false;
           installPhase = ''
@@ -52,6 +57,7 @@
           nativeBuildInputs = commonNativeBuildInputs ++ [
             pkgs.makeWrapper
           ];
+          buildInputs = commonBuildInputs;
           cargoBuildFlags = [ "--workspace" ];
           cargoTestFlags = [ "--workspace" ];
           postInstall = ''
