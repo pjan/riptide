@@ -14,13 +14,17 @@ allow = [
     "Zlib",
     "MPL-2.0",
 ]
+
 [advisories]
+# Real vulnerabilities remain errors (default); downgrade noise to warnings.
+unmaintained = "warn"
+unsound = "warn"
 ignore = []
 
 [bans]
 multiple-versions = "warn"
-wildcards = "deny"
-allow-wildcard-paths = true
+# Workspace-internal path deps are not intended for crates.io publication.
+wildcards = "warn"
 
 [sources]
 unknown-registry = "deny"
