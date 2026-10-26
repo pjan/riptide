@@ -665,7 +665,7 @@ mod tests {
     fn credentials_fall_back_to_embedded_default() -> TidalResult<()> {
         let credentials = TidalCredentials::from_sources(None, None)?;
         assert_eq!(credentials.client_id.as_str(), "fX2JxdmntZWK0ixT");
-        assert!(!credentials.client_secret.expose_secret().is_empty());
+        assert_ne!(credentials.client_secret.expose_secret(), "");
         Ok(())
     }
 

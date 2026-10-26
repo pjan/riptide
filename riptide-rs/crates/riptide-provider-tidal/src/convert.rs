@@ -393,8 +393,8 @@ mod tests {
         assert!(result.bpm.is_none());
         assert!(!result.dolby_atmos);
         assert!(result.album.is_none());
-        assert!(result.artists.is_empty());
-        assert!(result.external_ids.0.is_empty());
+        assert_eq!(result.artists.len(), 0);
+        assert_eq!(result.external_ids.0.len(), 0);
         Ok(())
     }
 

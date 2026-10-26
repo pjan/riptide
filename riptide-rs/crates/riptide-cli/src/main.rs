@@ -534,19 +534,20 @@ fn check_config(path: &Path) -> Result<()> {
 }
 
 fn run_template(command: TemplateCommand) -> Result<()> {
-    match command {
-        TemplateCommand::Check { template } => {
-            CompiledTemplate::parse(&template).context("failed to compile template")?;
-            println!("template ok");
-            Ok(())
+    let template_str = match &command {
+        TemplateCommand::Check { template } | TemplateCommand::RenderFixture { template, .. } => {
+            template.clone()
         }
+    };
+    let compiled =
+        CompiledTemplate::parse(&template_str).context("failed to compile template")?;
+    match command {
+        TemplateCommand::Check { .. } => println!("template ok"),
         TemplateCommand::RenderFixture {
-            template,
             fixture,
             no_asterisk_ext,
+            ..
         } => {
-            let compiled =
-                CompiledTemplate::parse(&template).context("failed to compile template")?;
             let fixture_json = fs::read_to_string(&fixture)
                 .with_context(|| format!("failed to load fixture from {}", fixture.display()))?;
             let context =
@@ -560,9 +561,9 @@ fn run_template(command: TemplateCommand) -> Result<()> {
                 )
                 .context("failed to render template")?;
             println!("{}", rendered.as_str());
-            Ok(())
         }
     }
+    Ok(())
 }
 
 async fn run_auth(options: &SharedOptions, command: AuthCommand) -> Result<()> {

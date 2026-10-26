@@ -195,7 +195,7 @@ impl TidalClient {
         let albums = self.artist_albums(id).await?;
         let singles = self.artist_singles(id).await?;
         Ok(deduplicate_albums_by_id(
-            albums.into_iter().chain(singles.into_iter()),
+            albums.into_iter().chain(singles),
         ))
     }
 
