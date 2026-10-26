@@ -539,8 +539,7 @@ fn run_template(command: TemplateCommand) -> Result<()> {
             template.clone()
         }
     };
-    let compiled =
-        CompiledTemplate::parse(&template_str).context("failed to compile template")?;
+    let compiled = CompiledTemplate::parse(&template_str).context("failed to compile template")?;
     match command {
         TemplateCommand::Check { .. } => println!("template ok"),
         TemplateCommand::RenderFixture {

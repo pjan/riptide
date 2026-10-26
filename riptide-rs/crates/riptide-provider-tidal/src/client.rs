@@ -194,9 +194,7 @@ impl TidalClient {
     pub(crate) async fn artist_albums_all(&self, id: &ResourceId) -> TidalResult<Vec<Album>> {
         let albums = self.artist_albums(id).await?;
         let singles = self.artist_singles(id).await?;
-        Ok(deduplicate_albums_by_id(
-            albums.into_iter().chain(singles),
-        ))
+        Ok(deduplicate_albums_by_id(albums.into_iter().chain(singles)))
     }
 
     pub(crate) async fn artist_albums_for_selection(
