@@ -22,10 +22,7 @@ unmaintained = "none"
 unsound = "none"
 # Known advisory IDs in the transitive dep tree as of initial setup.
 # Review periodically and remove entries once deps are updated.
-ignore = [
-    "RUSTSEC-2026-0194",
-    "RUSTSEC-2026-0195",
-]
+ignore = []
 
 [bans]
 multiple-versions = "warn"
