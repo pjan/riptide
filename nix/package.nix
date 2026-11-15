@@ -2,6 +2,7 @@
   lib,
   rustPlatform,
   openssl,
+  zstd,
   pkg-config,
   protobuf,
   makeWrapper,
@@ -22,7 +23,7 @@ rustPlatform.buildRustPackage {
     makeWrapper
   ];
 
-  buildInputs = [ openssl ];
+  buildInputs = [ openssl zstd ];
 
   cargoBuildFlags = [ "--workspace" ];
 
