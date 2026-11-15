@@ -82,7 +82,10 @@ fn manifest_and_codec(
             })?;
             Ok((Manifest::DirectSegments(bts.urls), codec))
         }
-        model::TidalManifestMime::Dash => Ok((Manifest::DashXml(decoded.to_owned()), None)),
+        model::TidalManifestMime::Dash => {
+            let codec = dash_codec(decoded)?;
+            Ok((Manifest::DashXml(decoded.to_owned()), codec))
+        }
         model::TidalManifestMime::Hls => Ok((
             Manifest::HlsMasterPlaylistUrl(Url::parse(decoded.trim()).map_err(|error| {
                 TidalError::InvalidResponse {
@@ -97,6 +100,27 @@ fn manifest_and_codec(
             message: "unsupported manifest MIME type".to_owned(),
         }),
     }
+}
+
+/// Extracts the codec from a DASH MPD XML `codecs` (or `codec`) attribute.
+fn dash_codec(xml: &str) -> TidalResult<Option<Codec>> {
+    let value = dash_attr_value(xml, "codecs").or_else(|| dash_attr_value(xml, "codec"));
+    value
+        .map(|v| {
+            Codec::new(v).map_err(|error| TidalError::InvalidResponse {
+                field: "stream.dash.codec".to_owned(),
+                message: error.to_string(),
+            })
+        })
+        .transpose()
+}
+
+/// Returns the first value of `attr="…"` found in `xml`.
+fn dash_attr_value(xml: &str, attr: &str) -> Option<String> {
+    let needle = format!("{attr}=\"");
+    let start = xml.find(&needle)? + needle.len();
+    let end = xml[start..].find('"')? + start;
+    Some(xml[start..end].to_owned())
 }
 
 fn audio_container(codec: Option<&Codec>, high_res: bool) -> ContainerKind {
@@ -158,6 +182,56 @@ mod tests {
         )?;
         assert!(matches!(stream.manifest, Manifest::DirectSegments(_)));
         assert_eq!(stream.container, ContainerKind::Flac);
+        Ok(())
+    }
+
+    #[test]
+    fn dash_manifest_extracts_flac_codec() -> Result<(), Box<dyn std::error::Error>> {
+        let dash_xml = r#"<MPD><Representation codecs="flac"><BaseURL>https://cdn.example.test/a.flac</BaseURL></Representation></MPD>"#;
+        let payload = STANDARD.encode(dash_xml);
+        let response = model::TidalStreamResponse {
+            manifest: payload,
+            manifest_mime_type: model::TidalManifestMime::Dash,
+            audio_quality: Some("LOSSLESS".to_owned()),
+        };
+        let stream = decode_track_manifest(
+            &response,
+            &MediaRef::new(
+                ProviderId::new(crate::TIDAL_PROVIDER_ID.as_str())?,
+                ResourceKind::Track,
+                ResourceId::new("1")?,
+            ),
+            AudioQualityRequest::Lossless,
+        )?;
+        assert_eq!(stream.container, ContainerKind::Flac);
+        assert_eq!(stream.codec.as_ref().map(Codec::as_str), Some("flac"));
+        assert!(stream.post_process.is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn dash_hires_flac_requests_extract_postprocess() -> Result<(), Box<dyn std::error::Error>> {
+        let dash_xml = r#"<MPD><Representation codecs="flac"><BaseURL>https://cdn.example.test/a.m4a</BaseURL></Representation></MPD>"#;
+        let payload = STANDARD.encode(dash_xml);
+        let response = model::TidalStreamResponse {
+            manifest: payload,
+            manifest_mime_type: model::TidalManifestMime::Dash,
+            audio_quality: Some("HI_RES_LOSSLESS".to_owned()),
+        };
+        let stream = decode_track_manifest(
+            &response,
+            &MediaRef::new(
+                ProviderId::new(crate::TIDAL_PROVIDER_ID.as_str())?,
+                ResourceKind::Track,
+                ResourceId::new("1")?,
+            ),
+            AudioQualityRequest::HiResLossless,
+        )?;
+        assert_eq!(stream.container, ContainerKind::M4a);
+        assert_eq!(
+            stream.post_process,
+            vec![PostProcessStep::ExtractFlac, PostProcessStep::RemoveSource]
+        );
         Ok(())
     }
 
