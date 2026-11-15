@@ -16,9 +16,9 @@ pub mod resource;
 pub mod stream;
 
 pub use auth::{
-    AccessToken, CountryCode, DeviceAuthorization, DeviceCode, FileTokenStore, PollingInterval,
-    RefreshToken, TidalAuthClient, TidalCredentials, TidalTokenState, TidalUserId, TokenExpiry,
-    TokenStore,
+    AccessToken, AuthFlow, AuthorizationCallback, CountryCode, DeviceAuthorization, DeviceCode,
+    FileTokenStore, PkceChallenge, PollingInterval, RefreshToken, TidalAuthClient,
+    TidalCredentials, TidalTokenState, TidalUserId, TokenExpiry, TokenStore,
 };
 pub use cache::{ApiCache, ApiCachePolicy, CacheEntryToWrite, CacheKey, RedbApiCache};
 pub use client::{ArtistAlbumSelection, SearchResults, TidalClient};

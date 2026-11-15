@@ -30,13 +30,18 @@ pub fn decode_track_manifest(
         .as_deref()
         .unwrap_or_else(|| audio_quality_request_label(requested_quality));
     let resolved_quality = audio_quality(quality_label)?;
+    let is_dash = matches!(response.manifest_mime_type, model::TidalManifestMime::Dash);
     let (manifest, codec) = manifest_and_codec(response.manifest_mime_type, &decoded)?;
     let high_res = matches!(
         requested_quality,
         AudioQualityRequest::HiResLossless | AudioQualityRequest::Best
     ) || matches!(quality_label, "HI_RES" | "HI_RES_LOSSLESS" | "MAX");
-    let container = audio_container(codec.as_ref(), high_res);
-    let post_process = audio_post_process(codec.as_ref(), high_res);
+    // DASH always delivers FLAC inside fMP4 segments, so extraction is needed
+    // regardless of hi-res status. BTS delivers raw FLAC directly for
+    // non-hi-res lossless.
+    let needs_extract = is_dash || high_res;
+    let container = audio_container(codec.as_ref(), needs_extract);
+    let post_process = audio_post_process(codec.as_ref(), needs_extract);
 
     Ok(StreamVariant {
         source: source.clone(),
@@ -123,18 +128,18 @@ fn dash_attr_value(xml: &str, attr: &str) -> Option<String> {
     Some(xml[start..end].to_owned())
 }
 
-fn audio_container(codec: Option<&Codec>, high_res: bool) -> ContainerKind {
+fn audio_container(codec: Option<&Codec>, needs_extract: bool) -> ContainerKind {
     let codec = codec.map(Codec::as_str).unwrap_or_default();
-    if codec.eq_ignore_ascii_case("flac") && !high_res {
+    if codec.eq_ignore_ascii_case("flac") && !needs_extract {
         ContainerKind::Flac
     } else {
         ContainerKind::M4a
     }
 }
 
-fn audio_post_process(codec: Option<&Codec>, high_res: bool) -> Vec<PostProcessStep> {
+fn audio_post_process(codec: Option<&Codec>, needs_extract: bool) -> Vec<PostProcessStep> {
     let codec = codec.map(Codec::as_str).unwrap_or_default();
-    if codec.eq_ignore_ascii_case("flac") && high_res {
+    if codec.eq_ignore_ascii_case("flac") && needs_extract {
         vec![PostProcessStep::ExtractFlac, PostProcessStep::RemoveSource]
     } else {
         Vec::new()
@@ -186,7 +191,7 @@ mod tests {
     }
 
     #[test]
-    fn dash_manifest_extracts_flac_codec() -> Result<(), Box<dyn std::error::Error>> {
+    fn dash_lossless_flac_needs_extract() -> Result<(), Box<dyn std::error::Error>> {
         let dash_xml = r#"<MPD><Representation codecs="flac"><BaseURL>https://cdn.example.test/a.flac</BaseURL></Representation></MPD>"#;
         let payload = STANDARD.encode(dash_xml);
         let response = model::TidalStreamResponse {
@@ -203,9 +208,13 @@ mod tests {
             ),
             AudioQualityRequest::Lossless,
         )?;
-        assert_eq!(stream.container, ContainerKind::Flac);
+        // DASH delivers FLAC inside fMP4 — needs extraction even for non-hi-res.
+        assert_eq!(stream.container, ContainerKind::M4a);
         assert_eq!(stream.codec.as_ref().map(Codec::as_str), Some("flac"));
-        assert!(stream.post_process.is_empty());
+        assert_eq!(
+            stream.post_process,
+            vec![PostProcessStep::ExtractFlac, PostProcessStep::RemoveSource]
+        );
         Ok(())
     }
 

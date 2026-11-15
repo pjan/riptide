@@ -1,13 +1,13 @@
 //! Gated live TIDAL auth flow verification.
 
-use riptide_provider_tidal::{FileTokenStore, TidalAuthClient, TidalCredentials, TokenStore};
+use riptide_provider_tidal::{AuthFlow, FileTokenStore, TidalAuthClient, TidalCredentials, TokenStore};
 use std::time::Duration;
 use url::Url;
 
 #[tokio::test]
 #[ignore = "requires real TIDAL credentials and manual device-code authorization"]
 async fn live_tidal_device_auth_flow_completes() -> Result<(), Box<dyn std::error::Error>> {
-    let credentials = TidalCredentials::from_env()?;
+    let credentials = TidalCredentials::from_env(AuthFlow::DeviceCode)?;
     let http = riptide_provider_tidal::http_client()?;
     let auth = TidalAuthClient::new(
         http,

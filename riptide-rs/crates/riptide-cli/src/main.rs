@@ -137,12 +137,24 @@ enum TemplateCommand {
 enum AuthCommand {
     /// Show whether a TIDAL token is available.
     Status,
-    /// Run OAuth device authorization.
-    Login,
+    /// Log in to TIDAL (PKCE browser flow by default).
+    Login(AuthLoginArgs),
     /// Refresh the stored token.
     Refresh,
     /// Logout and clear the stored token.
     Logout,
+}
+
+/// Arguments for the login command.
+#[derive(Debug, clap::Args)]
+struct AuthLoginArgs {
+    /// Use the legacy device-code flow instead of PKCE.
+    /// Note: device-flow may limit audio quality to HIGH (AAC).
+    #[arg(long)]
+    device_flow: bool,
+    /// Print the authorization URL instead of opening a browser.
+    #[arg(long)]
+    no_browser: bool,
 }
 
 /// List commands.
@@ -585,39 +597,54 @@ async fn run_auth(options: &SharedOptions, command: AuthCommand) -> Result<()> {
             }
             Ok(())
         }
-        AuthCommand::Login => {
-            let auth = auth_client(http.clone(), options)?;
-            let authorization = auth
-                .device_authorization()
-                .await
-                .context("failed to start TIDAL device authorization")?;
-            println!("Open: {}", authorization.verification_uri_complete);
-            println!("Code: {}", authorization.user_code.as_str());
-            let mut interval = authorization.interval;
-            loop {
-                tokio::select! {
-                    _ = tokio::signal::ctrl_c() => {
-                        eprintln!("auth login cancelled");
-                        std::process::exit(130);
+        AuthCommand::Login(args) => {
+            if args.device_flow {
+                eprintln!(
+                    "Note: device-flow authentication may limit audio quality to \
+                     HIGH (AAC). Use the default PKCE login for lossless/HiRes support."
+                );
+                let auth = auth_client_for_flow(
+                    http.clone(),
+                    options,
+                    riptide_provider_tidal::auth::AuthFlow::DeviceCode,
+                )?;
+                let authorization = auth
+                    .device_authorization()
+                    .await
+                    .context("failed to start TIDAL device authorization")?;
+                println!("Open: {}", authorization.verification_uri_complete);
+                println!("Code: {}", authorization.user_code.as_str());
+                let mut interval = authorization.interval;
+                loop {
+                    tokio::select! {
+                        _ = tokio::signal::ctrl_c() => {
+                            eprintln!("auth login cancelled");
+                            std::process::exit(130);
+                        }
+                        () = tokio::time::sleep(interval.as_duration()) => {}
                     }
-                    () = tokio::time::sleep(interval.as_duration()) => {}
+                    match auth.exchange_device_code(&authorization.device_code).await {
+                        Ok(token) => {
+                            token_store
+                                .save(&token)
+                                .await
+                                .context("failed to save TIDAL token")?;
+                            println!("authenticated: user={}", token.user_id.as_str());
+                            return Ok(());
+                        }
+                        Err(TidalError::AuthorizationPending) => {}
+                        Err(TidalError::SlowDown) => {
+                            interval = interval.slow_down();
+                        }
+                        Err(error) => {
+                            return Err(error).context("TIDAL device authorization failed")
+                        }
+                    }
                 }
-                match auth.exchange_device_code(&authorization.device_code).await {
-                    Ok(token) => {
-                        token_store
-                            .save(&token)
-                            .await
-                            .context("failed to save TIDAL token")?;
-                        println!("authenticated: user={}", token.user_id.as_str());
-                        return Ok(());
-                    }
-                    Err(TidalError::AuthorizationPending) => {}
-                    Err(TidalError::SlowDown) => {
-                        interval = interval.slow_down();
-                    }
-                    Err(error) => return Err(error).context("TIDAL device authorization failed"),
-                }
+            } else {
+                run_pkce_login(&token_store, http.clone(), options, &args).await?;
             }
+            Ok(())
         }
         AuthCommand::Refresh => {
             let Some(token) = token_store
@@ -2112,13 +2139,98 @@ async fn tidal_client(options: &SharedOptions) -> Result<TidalClient> {
     ))
 }
 
-fn auth_client(http: HttpClient, options: &SharedOptions) -> Result<TidalAuthClient> {
-    let credentials = TidalCredentials::from_env().context("failed to load TIDAL credentials")?;
+async fn run_pkce_login(
+    token_store: &FileTokenStore,
+    http: HttpClient,
+    options: &SharedOptions,
+    args: &AuthLoginArgs,
+) -> Result<()> {
+    use riptide_provider_tidal::auth::{
+        parse_authorization_callback, AuthFlow, AuthorizationCallback, PkceChallenge,
+    };
+
+    let auth = auth_client_for_flow(http, options, AuthFlow::Pkce)?;
+    let challenge = PkceChallenge::new().context("failed to generate PKCE challenge")?;
+    let url = auth
+        .authorize_url(&challenge)
+        .context("failed to build authorization URL")?;
+
+    if args.no_browser {
+        println!("Open this URL in your browser to authorize:");
+    } else {
+        println!("Opening browser for TIDAL authorization...");
+        if let Err(error) = open::that(url.as_str()) {
+            eprintln!("Failed to open browser: {error}");
+            println!("Open this URL manually:");
+        }
+    }
+    println!("{url}");
+    println!();
+    println!("After authorizing, paste the URL from the browser address bar:");
+
+    let input = tokio::select! {
+        _ = tokio::signal::ctrl_c() => {
+            eprintln!("auth login cancelled");
+            std::process::exit(130);
+        }
+        line = tokio::task::spawn_blocking(|| {
+            let mut buf = String::new();
+            std::io::stdin().read_line(&mut buf).map(|_| buf)
+        }) => {
+            line.context("failed to read input")?
+                .context("failed to read from stdin")?
+        }
+    };
+
+    let callback = parse_authorization_callback(&input)
+        .context("failed to parse authorization callback")?;
+
+    match callback {
+        AuthorizationCallback::Error { error, description } => {
+            let msg = description.unwrap_or_default();
+            anyhow::bail!("authorization denied: {error} {msg}");
+        }
+        AuthorizationCallback::Success { code, state } => {
+            // Validate state if present in callback.
+            if let Some(returned_state) = &state {
+                if returned_state != &challenge.state {
+                    anyhow::bail!(
+                        "state mismatch: expected {}, got {returned_state}",
+                        challenge.state
+                    );
+                }
+            }
+            let token = auth
+                .exchange_authorization_code(&code, &challenge)
+                .await
+                .context("failed to exchange authorization code")?;
+            token_store
+                .save(&token)
+                .await
+                .context("failed to save TIDAL token")?;
+            println!("authenticated: user={}", token.user_id.as_str());
+        }
+    }
+
+    Ok(())
+}
+
+fn auth_client_for_flow(
+    http: HttpClient,
+    options: &SharedOptions,
+    flow: riptide_provider_tidal::auth::AuthFlow,
+) -> Result<TidalAuthClient> {
+    let credentials = TidalCredentials::from_env(flow)
+        .context("failed to load TIDAL credentials")?;
     Ok(TidalAuthClient::new(
         http,
         options.auth_base_url.clone(),
         credentials,
     ))
+}
+
+fn auth_client(http: HttpClient, options: &SharedOptions) -> Result<TidalAuthClient> {
+    auth_client_for_flow(http, options, riptide_provider_tidal::auth::AuthFlow::Pkce)
 }
 
 fn auth_file(options: &SharedOptions) -> Result<PathBuf> {

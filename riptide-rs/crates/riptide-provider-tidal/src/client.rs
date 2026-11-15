@@ -394,14 +394,16 @@ impl TidalClient {
             .expires_at
             .expires_within(time::OffsetDateTime::now_utc(), REFRESH_THRESHOLD)
         {
-            return self
+            let refreshed = self
                 .auth
                 .refresh(&token.refresh_token)
                 .await
                 .map_err(|source| TidalError::Refresh {
                     operation: operation.to_owned(),
                     source: Box::new(source),
-                });
+                })?;
+            self.token_store.save(&refreshed).await?;
+            return Ok(refreshed);
         }
         Ok(token)
     }

@@ -1,8 +1,9 @@
-//! TIDAL OAuth device-flow authentication and token storage.
+//! TIDAL OAuth device-flow and PKCE authorization-code authentication.
 
 use crate::{TidalError, TidalResult};
 use base64::{engine::general_purpose::STANDARD, Engine as _};
 use reqwest::Url;
+use ring::{digest, rand as ring_rand, rand::SecureRandom};
 use serde::{Deserialize, Serialize};
 use std::{
     env, fmt, fs,
@@ -12,8 +13,18 @@ use std::{
 
 const SCOPE: &str = "r_usr+w_usr+w_sub";
 const DEVICE_GRANT: &str = "urn:ietf:params:oauth:grant-type:device_code";
-const DEFAULT_CREDENTIALS_B64: &str =
+
+/// Device-flow client credentials (Android Automotive HiRes).
+/// Note: capped at AAC HIGH for 16-bit lossless since April 2026.
+const DEVICE_CREDENTIALS_B64: &str =
     "ZlgySnhkbW50WldLMGl4VDsxTm45QWZEQWp4cmdKRkpiS05XTGVBeUtHVkdtSU51WFBQTEhWWEF2eEFnPQ==";
+
+/// PKCE client credentials (Android mobile app). Supports lossless and HiRes.
+const PKCE_CREDENTIALS_B64: &str =
+    "NkJEU1JkcEs5aHFFQlRnVTt4ZXVQbVk3bmJwWjlJSWJMQWNROTNzaGthMVZOaGVVQXFONkljc3pqVEc4PQ==";
+
+const PKCE_REDIRECT_URI: &str = "https://tidal.com/android/login/auth";
+const AUTHORIZE_BASE_URL: &str = "https://login.tidal.com/authorize";
 
 macro_rules! secret_string {
     ($name:ident) => {
@@ -81,6 +92,159 @@ secret_string!(AccessToken);
 secret_string!(RefreshToken);
 non_empty_string!(DeviceCode, "OAuth device code.");
 non_empty_string!(UserCode, "OAuth user code.");
+non_empty_string!(AuthorizationCode, "OAuth authorization code.");
+
+/// Authentication flow selection.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AuthFlow {
+    /// PKCE authorization-code flow (default). Supports lossless and HiRes.
+    Pkce,
+    /// Device-code flow. May be capped at AAC HIGH quality.
+    DeviceCode,
+}
+
+impl Default for AuthFlow {
+    fn default() -> Self {
+        Self::Pkce
+    }
+}
+
+/// Returns embedded credentials for the given auth flow.
+pub fn credentials_for_flow(flow: AuthFlow) -> TidalResult<TidalCredentials> {
+    let encoded = match flow {
+        AuthFlow::Pkce => PKCE_CREDENTIALS_B64,
+        AuthFlow::DeviceCode => DEVICE_CREDENTIALS_B64,
+    };
+    let bytes = STANDARD
+        .decode(encoded)
+        .map_err(|error| TidalError::InvalidValue {
+            field: "embedded_credentials",
+            message: error.to_string(),
+        })?;
+    let decoded = String::from_utf8(bytes).map_err(|error| TidalError::InvalidValue {
+        field: "embedded_credentials",
+        message: error.to_string(),
+    })?;
+    TidalCredentials::from_semicolon_pair("embedded_credentials", &decoded)
+}
+
+/// PKCE challenge for S256 authorization-code flow.
+pub struct PkceChallenge {
+    code_verifier: String,
+    /// S256 code challenge derived from the verifier.
+    pub code_challenge: String,
+    /// Random state parameter for CSRF protection.
+    pub state: String,
+}
+
+impl PkceChallenge {
+    /// Generates a new PKCE challenge with a cryptographically random verifier
+    /// and state.
+    pub fn new() -> TidalResult<Self> {
+        let rng = ring_rand::SystemRandom::new();
+
+        let mut verifier_bytes = [0u8; 32];
+        rng.fill(&mut verifier_bytes)
+            .map_err(|_| TidalError::InvalidValue {
+                field: "pkce_verifier",
+                message: "failed to generate random bytes".to_owned(),
+            })?;
+        let code_verifier = base64url_nopad_encode(&verifier_bytes);
+
+        let digest = digest::digest(&digest::SHA256, code_verifier.as_bytes());
+        let code_challenge = base64url_nopad_encode(digest.as_ref());
+
+        let mut state_bytes = [0u8; 16];
+        rng.fill(&mut state_bytes)
+            .map_err(|_| TidalError::InvalidValue {
+                field: "pkce_state",
+                message: "failed to generate random bytes".to_owned(),
+            })?;
+        let state = base64url_nopad_encode(&state_bytes);
+
+        Ok(Self {
+            code_verifier,
+            code_challenge,
+            state,
+        })
+    }
+
+    /// Returns the code verifier (secret, for token exchange only).
+    pub fn code_verifier(&self) -> &str {
+        &self.code_verifier
+    }
+}
+
+impl fmt::Debug for PkceChallenge {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("PkceChallenge")
+            .field("code_verifier", &"***")
+            .field("code_challenge", &self.code_challenge)
+            .field("state", &self.state)
+            .finish()
+    }
+}
+
+/// Parsed callback from the TIDAL authorization redirect.
+#[derive(Debug, Clone)]
+pub enum AuthorizationCallback {
+    /// Successful authorization with a code.
+    Success {
+        /// Authorization code.
+        code: String,
+        /// State parameter (if present).
+        state: Option<String>,
+    },
+    /// Authorization error.
+    Error {
+        /// Error code.
+        error: String,
+        /// Human-readable description.
+        description: Option<String>,
+    },
+}
+
+/// Parses a pasted callback URL or bare authorization code.
+pub fn parse_authorization_callback(input: &str) -> TidalResult<AuthorizationCallback> {
+    let trimmed = input.trim();
+    if trimmed.is_empty() {
+        return Err(TidalError::InvalidValue {
+            field: "callback",
+            message: "empty input".to_owned(),
+        });
+    }
+
+    // Try parsing as a URL with query parameters.
+    if let Ok(url) = Url::parse(trimmed) {
+        let params: std::collections::HashMap<String, String> =
+            url.query_pairs().map(|(k, v)| (k.into_owned(), v.into_owned())).collect();
+
+        if let Some(error) = params.get("error") {
+            return Ok(AuthorizationCallback::Error {
+                error: error.clone(),
+                description: params.get("error_description").cloned(),
+            });
+        }
+
+        if let Some(code) = params.get("code") {
+            return Ok(AuthorizationCallback::Success {
+                code: code.clone(),
+                state: params.get("state").cloned(),
+            });
+        }
+    }
+
+    // Treat as a bare authorization code.
+    Ok(AuthorizationCallback::Success {
+        code: trimmed.to_owned(),
+        state: None,
+    })
+}
+
+fn base64url_nopad_encode(bytes: &[u8]) -> String {
+    use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+    URL_SAFE_NO_PAD.encode(bytes)
+}
 non_empty_string!(TidalUserId, "TIDAL user ID.");
 
 /// TIDAL country code, ISO 3166-1 alpha-2 uppercase.
@@ -166,21 +330,27 @@ pub struct TidalCredentials {
 }
 
 impl TidalCredentials {
-    /// Loads credentials from supported environment variables.
-    pub fn from_env() -> TidalResult<Self> {
+    /// Loads credentials from environment variables, falling back to embedded
+    /// credentials for the given auth flow.
+    pub fn from_env(flow: AuthFlow) -> TidalResult<Self> {
         Self::from_sources(
             env::var("RIPTIDE_TIDAL_CLIENT_ID").ok(),
             env::var("RIPTIDE_TIDAL_CLIENT_SECRET").ok(),
+            flow,
         )
     }
 
-    fn from_sources(client_id: Option<String>, client_secret: Option<String>) -> TidalResult<Self> {
+    fn from_sources(
+        client_id: Option<String>,
+        client_secret: Option<String>,
+        flow: AuthFlow,
+    ) -> TidalResult<Self> {
         match (client_id, client_secret) {
             (Some(client_id), Some(client_secret)) => Ok(Self {
                 client_id: TidalClientId::new(client_id)?,
                 client_secret: TidalClientSecret::new(client_secret)?,
             }),
-            (None, None) => Self::from_default_fallback(),
+            (None, None) => credentials_for_flow(flow),
             _ => Err(TidalError::InvalidValue {
                 field: "TIDAL credentials",
                 message:
@@ -201,21 +371,6 @@ impl TidalCredentials {
             client_id: TidalClientId::new(client_id)?,
             client_secret: TidalClientSecret::new(client_secret)?,
         })
-    }
-
-    fn from_default_fallback() -> TidalResult<Self> {
-        let bytes =
-            STANDARD
-                .decode(DEFAULT_CREDENTIALS_B64)
-                .map_err(|error| TidalError::InvalidValue {
-                    field: "default_credentials",
-                    message: error.to_string(),
-                })?;
-        let decoded = String::from_utf8(bytes).map_err(|error| TidalError::InvalidValue {
-            field: "default_credentials",
-            message: error.to_string(),
-        })?;
-        Self::from_semicolon_pair("default_credentials", &decoded)
     }
 }
 
@@ -456,6 +611,40 @@ impl TidalAuthClient {
         .await
     }
 
+    /// Builds the PKCE authorization URL for the user to visit.
+    pub fn authorize_url(&self, challenge: &PkceChallenge) -> TidalResult<Url> {
+        let mut url = Url::parse(AUTHORIZE_BASE_URL).map_err(|error| TidalError::InvalidValue {
+            field: "authorize_url",
+            message: error.to_string(),
+        })?;
+        url.query_pairs_mut()
+            .append_pair("response_type", "code")
+            .append_pair("client_id", self.credentials.client_id.as_str())
+            .append_pair("redirect_uri", PKCE_REDIRECT_URI)
+            .append_pair("scope", SCOPE)
+            .append_pair("code_challenge", &challenge.code_challenge)
+            .append_pair("code_challenge_method", "S256")
+            .append_pair("state", &challenge.state);
+        Ok(url)
+    }
+
+    /// Exchanges a PKCE authorization code for token state.
+    pub async fn exchange_authorization_code(
+        &self,
+        code: &str,
+        challenge: &PkceChallenge,
+    ) -> TidalResult<TidalTokenState> {
+        self.token(&[
+            ("client_id", self.credentials.client_id.as_str()),
+            ("code", code),
+            ("grant_type", "authorization_code"),
+            ("redirect_uri", PKCE_REDIRECT_URI),
+            ("code_verifier", challenge.code_verifier()),
+            ("scope", SCOPE),
+        ])
+        .await
+    }
+
     async fn token(&self, form: &[(&str, &str)]) -> TidalResult<TidalTokenState> {
         #[derive(Deserialize)]
         struct User {
@@ -647,6 +836,7 @@ mod tests {
         let credentials = TidalCredentials::from_sources(
             Some("new-id".to_owned()),
             Some("new-secret".to_owned()),
+            AuthFlow::Pkce,
         )?;
         assert_eq!(credentials.client_id.as_str(), "new-id");
         assert_eq!(credentials.client_secret.expose_secret(), "new-secret");
@@ -655,18 +845,110 @@ mod tests {
 
     #[test]
     fn credentials_reject_partial_env_pair() {
-        let error = TidalCredentials::from_sources(Some("new-id".to_owned()), None);
+        let error =
+            TidalCredentials::from_sources(Some("new-id".to_owned()), None, AuthFlow::Pkce);
         assert!(
             matches!(error, Err(TidalError::InvalidValue { field, .. }) if field == "TIDAL credentials")
         );
     }
 
     #[test]
-    fn credentials_fall_back_to_embedded_default() -> TidalResult<()> {
-        let credentials = TidalCredentials::from_sources(None, None)?;
+    fn credentials_default_to_pkce() -> TidalResult<()> {
+        let credentials = TidalCredentials::from_sources(None, None, AuthFlow::Pkce)?;
+        assert_eq!(credentials.client_id.as_str(), "6BDSRdpK9hqEBTgU");
+        assert_ne!(credentials.client_secret.expose_secret(), "");
+        Ok(())
+    }
+
+    #[test]
+    fn credentials_device_flow_returns_device_client() -> TidalResult<()> {
+        let credentials = TidalCredentials::from_sources(None, None, AuthFlow::DeviceCode)?;
         assert_eq!(credentials.client_id.as_str(), "fX2JxdmntZWK0ixT");
         assert_ne!(credentials.client_secret.expose_secret(), "");
         Ok(())
+    }
+
+    #[test]
+    fn env_override_takes_priority_over_flow() -> TidalResult<()> {
+        let credentials = TidalCredentials::from_sources(
+            Some("custom-id".to_owned()),
+            Some("custom-secret".to_owned()),
+            AuthFlow::DeviceCode,
+        )?;
+        assert_eq!(credentials.client_id.as_str(), "custom-id");
+        Ok(())
+    }
+
+    #[test]
+    fn pkce_challenge_produces_valid_verifier() -> TidalResult<()> {
+        let challenge = PkceChallenge::new()?;
+        // base64url of 32 bytes = 43 chars (no padding)
+        assert_eq!(challenge.code_verifier().len(), 43);
+        assert!(!challenge.code_challenge.is_empty());
+        assert!(!challenge.state.is_empty());
+        // Verify S256: challenge = base64url(sha256(verifier))
+        let expected_digest = digest::digest(&digest::SHA256, challenge.code_verifier().as_bytes());
+        let expected = base64url_nopad_encode(expected_digest.as_ref());
+        assert_eq!(challenge.code_challenge, expected);
+        Ok(())
+    }
+
+    #[test]
+    fn pkce_challenge_debug_redacts_verifier() -> TidalResult<()> {
+        let challenge = PkceChallenge::new()?;
+        let debug = format!("{challenge:?}");
+        assert!(debug.contains("***"));
+        assert!(!debug.contains(challenge.code_verifier()));
+        Ok(())
+    }
+
+    #[test]
+    fn parse_callback_url_with_code_and_state() -> TidalResult<()> {
+        let input = "https://tidal.com/android/login/auth?code=abc123&state=xyz";
+        let result = parse_authorization_callback(input)?;
+        match result {
+            AuthorizationCallback::Success { code, state } => {
+                assert_eq!(code, "abc123");
+                assert_eq!(state.as_deref(), Some("xyz"));
+            }
+            AuthorizationCallback::Error { .. } => panic!("expected success"),
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn parse_callback_url_with_error() -> TidalResult<()> {
+        let input =
+            "https://tidal.com/android/login/auth?error=access_denied&error_description=User+denied";
+        let result = parse_authorization_callback(input)?;
+        match result {
+            AuthorizationCallback::Error { error, description } => {
+                assert_eq!(error, "access_denied");
+                assert_eq!(description.as_deref(), Some("User denied"));
+            }
+            AuthorizationCallback::Success { .. } => panic!("expected error"),
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn parse_callback_bare_code() -> TidalResult<()> {
+        let input = "abc123";
+        let result = parse_authorization_callback(input)?;
+        match result {
+            AuthorizationCallback::Success { code, state } => {
+                assert_eq!(code, "abc123");
+                assert!(state.is_none());
+            }
+            AuthorizationCallback::Error { .. } => panic!("expected success"),
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn parse_callback_empty_input_fails() {
+        assert!(parse_authorization_callback("").is_err());
+        assert!(parse_authorization_callback("  ").is_err());
     }
 
     #[test]

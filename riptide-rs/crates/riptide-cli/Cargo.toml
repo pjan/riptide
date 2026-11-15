@@ -10,6 +10,7 @@ clap.workspace = true
 console = "0.15"
 directories.workspace = true
 indicatif.workspace = true
+open.workspace = true
 riptide-config = { path = "../riptide-config" }
 riptide-core = { path = "../riptide-core" }
 riptide-media = { path = "../riptide-media" }

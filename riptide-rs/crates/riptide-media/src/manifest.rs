@@ -85,6 +85,10 @@ pub async fn resolve_manifest_async(
 }
 
 /// Parses a DASH MPD XML document into segment URLs and codec info.
+///
+/// Handles both `SegmentURL`-based and `SegmentTemplate`-based manifests.
+/// For `SegmentTemplate`, expands `$Number$` placeholders using the
+/// `SegmentTimeline` to determine the segment count.
 pub fn parse_dash_mpd(xml: &str) -> MediaResult<ResolvedSegments> {
     let base_url = first_tag_text(xml, "BaseURL").and_then(|value| Url::parse(&value).ok());
     let codec = attr_value(xml, "codecs")
@@ -97,20 +101,46 @@ pub fn parse_dash_mpd(xml: &str) -> MediaResult<ResolvedSegments> {
         })?;
 
     let mut urls = Vec::new();
-    for media in attr_values(xml, "media") {
-        let url = match &base_url {
-            Some(base) => base
-                .join(&media)
-                .map_err(|error| MediaError::ManifestParse {
+
+    // Check for SegmentTemplate with $Number$ expansion.
+    if xml.contains("SegmentTemplate") {
+        if let Some(init_template) = attr_value(xml, "initialization") {
+            let init_url = parse_dash_url(&init_template, &base_url)?;
+            urls.push(init_url);
+        }
+
+        if let Some(media_template) = attr_value(xml, "media") {
+            if media_template.contains("$Number$") {
+                let start_number = attr_value(xml, "startNumber")
+                    .and_then(|s| s.parse::<u32>().ok())
+                    .unwrap_or(1);
+                let segment_count = count_timeline_segments(xml);
+                for n in start_number..start_number + segment_count {
+                    let expanded = media_template.replace("$Number$", &n.to_string());
+                    urls.push(parse_dash_url(&expanded, &base_url)?);
+                }
+            } else if media_template.contains('$') {
+                return Err(MediaError::ManifestParse {
                     format: "dash",
-                    message: error.to_string(),
-                })?,
-            None => Url::parse(&media).map_err(|error| MediaError::ManifestParse {
-                format: "dash",
-                message: error.to_string(),
-            })?,
-        };
-        urls.push(url);
+                    message: format!(
+                        "unsupported SegmentTemplate variable in: {media_template}"
+                    ),
+                });
+            } else {
+                urls.push(parse_dash_url(&media_template, &base_url)?);
+            }
+        }
+    }
+
+    // Fallback: SegmentURL-based manifests.
+    if urls.is_empty() {
+        for media in attr_values(xml, "media") {
+            // Skip SegmentTemplate media attributes (contain $Number$).
+            if media.contains("$Number$") {
+                continue;
+            }
+            urls.push(parse_dash_url(&media, &base_url)?);
+        }
     }
 
     if urls.is_empty() {
@@ -127,6 +157,43 @@ pub fn parse_dash_mpd(xml: &str) -> MediaResult<ResolvedSegments> {
     }
 
     Ok(ResolvedSegments { urls, codec })
+}
+
+fn parse_dash_url(raw: &str, base_url: &Option<Url>) -> MediaResult<Url> {
+    match base_url {
+        Some(base) => base
+            .join(raw)
+            .map_err(|error| MediaError::ManifestParse {
+                format: "dash",
+                message: error.to_string(),
+            }),
+        None => Url::parse(raw).map_err(|error| MediaError::ManifestParse {
+            format: "dash",
+            message: error.to_string(),
+        }),
+    }
+}
+
+/// Counts total segments from a DASH `SegmentTimeline`.
+/// Each `<S>` element has a `d` (duration) and optional `r` (repeat count).
+/// A segment with `r="N"` represents N+1 segments total.
+fn count_timeline_segments(xml: &str) -> u32 {
+    let mut count = 0u32;
+    // Find <S ... /> elements within SegmentTimeline.
+    let mut rest = xml;
+    while let Some(pos) = rest.find("<S ") {
+        let start = pos;
+        let Some(end) = rest[start..].find("/>") else {
+            break;
+        };
+        let element = &rest[start..start + end + 2];
+        let repeat = attr_value(element, "r")
+            .and_then(|s| s.parse::<u32>().ok())
+            .unwrap_or(0);
+        count += 1 + repeat;
+        rest = &rest[start + end + 2..];
+    }
+    count
 }
 
 /// Parses an HLS media playlist into segment URLs.
@@ -198,7 +265,7 @@ fn first_tag_text(xml: &str, tag: &str) -> Option<String> {
     let close = format!("</{tag}>");
     let start = xml.find(&open)? + open.len();
     let end = xml[start..].find(&close)? + start;
-    Some(xml[start..end].trim().to_owned())
+    Some(xml_unescape(xml[start..end].trim()))
 }
 
 fn attr_value(xml: &str, attr: &str) -> Option<String> {
@@ -214,10 +281,19 @@ fn attr_values(xml: &str, attr: &str) -> Vec<String> {
         let Some(end) = rest[start..].find('"') else {
             break;
         };
-        values.push(rest[start..start + end].to_owned());
+        values.push(xml_unescape(&rest[start..start + end]));
         rest = &rest[start + end + 1..];
     }
     values
+}
+
+/// Unescapes the five predefined XML entities.
+fn xml_unescape(s: &str) -> String {
+    s.replace("&amp;", "&")
+        .replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&quot;", "\"")
+        .replace("&apos;", "'")
 }
 
 #[cfg(test)]
@@ -244,6 +320,93 @@ mod tests {
             "https://cdn.example.test/audio/one.flac"
         );
         assert_eq!(parsed.codec.as_ref().map(Codec::as_str), Some("flac"));
+        Ok(())
+    }
+
+    #[test]
+    fn dash_segment_template_expands_number() -> Result<(), Box<dyn std::error::Error>> {
+        let xml = r#"
+        <MPD>
+          <Period id="0">
+            <AdaptationSet>
+              <Representation codecs="flac">
+                <SegmentTemplate timescale="44100"
+                  initialization="https://cdn.example.test/init.mp4"
+                  media="https://cdn.example.test/$Number$.mp4">
+                  <SegmentTimeline>
+                    <S d="176128" r="2"/>
+                    <S d="152313"/>
+                  </SegmentTimeline>
+                </SegmentTemplate>
+              </Representation>
+            </AdaptationSet>
+          </Period>
+        </MPD>
+        "#;
+        let parsed = parse_dash_mpd(xml)?;
+        // init + 4 segments (r=2 means 3 + 1 final)
+        assert_eq!(parsed.urls.len(), 5);
+        assert_eq!(
+            parsed.urls[0].as_str(),
+            "https://cdn.example.test/init.mp4"
+        );
+        assert_eq!(parsed.urls[1].as_str(), "https://cdn.example.test/1.mp4");
+        assert_eq!(parsed.urls[4].as_str(), "https://cdn.example.test/4.mp4");
+        assert_eq!(parsed.codec.as_ref().map(Codec::as_str), Some("flac"));
+        Ok(())
+    }
+
+    #[test]
+    fn dash_segment_template_respects_start_number() -> Result<(), Box<dyn std::error::Error>> {
+        let xml = r#"
+        <MPD>
+          <Period>
+            <AdaptationSet>
+              <Representation codecs="flac">
+                <SegmentTemplate startNumber="0"
+                  initialization="https://cdn.example.test/init.mp4"
+                  media="https://cdn.example.test/$Number$.mp4">
+                  <SegmentTimeline>
+                    <S d="176128" r="1"/>
+                  </SegmentTimeline>
+                </SegmentTemplate>
+              </Representation>
+            </AdaptationSet>
+          </Period>
+        </MPD>
+        "#;
+        let parsed = parse_dash_mpd(xml)?;
+        // init + 2 segments starting at 0
+        assert_eq!(parsed.urls.len(), 3);
+        assert_eq!(parsed.urls[1].as_str(), "https://cdn.example.test/0.mp4");
+        assert_eq!(parsed.urls[2].as_str(), "https://cdn.example.test/1.mp4");
+        Ok(())
+    }
+
+    #[test]
+    fn dash_unescapes_xml_entities_in_urls() -> Result<(), Box<dyn std::error::Error>> {
+        let xml = r#"
+        <MPD>
+          <Period>
+            <AdaptationSet>
+              <Representation codecs="flac">
+                <SegmentTemplate
+                  initialization="https://cdn.example.test/init.mp4?Policy=abc&amp;Signature=xyz&amp;Key-Pair-Id=123"
+                  media="https://cdn.example.test/$Number$.mp4?Policy=abc&amp;Signature=xyz">
+                  <SegmentTimeline>
+                    <S d="176128"/>
+                  </SegmentTimeline>
+                </SegmentTemplate>
+              </Representation>
+            </AdaptationSet>
+          </Period>
+        </MPD>
+        "#;
+        let parsed = parse_dash_mpd(xml)?;
+        assert_eq!(parsed.urls.len(), 2);
+        // Verify &amp; was unescaped to & in the URLs
+        assert!(parsed.urls[0].as_str().contains("Policy=abc&Signature=xyz&Key-Pair-Id=123"));
+        assert!(parsed.urls[1].as_str().contains("Policy=abc&Signature=xyz"));
         Ok(())
     }
 
